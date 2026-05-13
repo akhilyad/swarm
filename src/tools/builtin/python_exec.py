@@ -6,6 +6,7 @@ No host access, no network, destroyed immediately after execution.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
@@ -13,6 +14,7 @@ import docker
 from docker.errors import DockerException, ImageNotFound
 
 from ..base import BaseTool, ToolResult
+from ._workspace import _WORKSPACE_DIR
 
 
 _IMAGE = "python:3.11-alpine"
@@ -73,11 +75,15 @@ class PythonExecTool(BaseTool):
                 network_disabled=True,
                 auto_remove=False,
                 read_only=True,
+                volumes={_WORKSPACE_DIR: {"bind": "/workspace", "mode": "rw"}},
+                working_dir="/workspace",
             )
 
             container.start()
 
-            exit_code = container.wait(timeout=cmd_timeout).get("StatusCode", -1)
+            # Run the blocking container.wait() in a thread so the event loop stays responsive
+            response = await asyncio.to_thread(container.wait, timeout=cmd_timeout)
+            exit_code = response.get("StatusCode", -1)
 
             stdout_raw = container.logs(stdout=True, stderr=False).decode(errors="replace")
             stderr_raw = container.logs(stdout=False, stderr=True).decode(errors="replace")

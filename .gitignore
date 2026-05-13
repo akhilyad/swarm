@@ -13,6 +13,9 @@ venv/
 htmlcov/
 .coverage
 
+# Data (message bus persistence, etc.)
+data/
+
 # Memory / vector store
 memory/chroma/
 

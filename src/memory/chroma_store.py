@@ -6,6 +6,7 @@ configured directory (default: ./memory/chroma).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -57,7 +58,8 @@ class ChromaMemoryStore(MemoryStore):
         entry_id = entry.entry_id
 
         try:
-            self._collection.add(
+            await asyncio.to_thread(
+                self._collection.add,
                 ids=[entry_id],
                 documents=[entry.content],
                 metadatas=[
@@ -90,7 +92,9 @@ class ChromaMemoryStore(MemoryStore):
         ]
 
         try:
-            self._collection.add(ids=ids, documents=documents, metadatas=metadatas)
+            await asyncio.to_thread(
+                self._collection.add, ids=ids, documents=documents, metadatas=metadatas
+            )
             return ids
         except Exception as e:
             raise MemoryError(f"Failed to store memory entries: {e}")

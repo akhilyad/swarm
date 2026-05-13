@@ -5,7 +5,7 @@ Each agent runs its own AgentLoop that:
 2. Decomposes complex goals into sub-goals (for MANAGER/CEO)
 3. Delegates sub-goals to children (for MANAGER/CEO)
 4. Executes simple goals directly by calling the LLM (for WORKER)
-5. Supports tool calling: LLM can invoke tools, get results, and continue
+5. Supports tool calling via LiteLLM native function-calling (no regex)
 6. Synthesizes results and reports back up the hierarchy
 """
 
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from ..communication.bus import MessageBus, Subscription
@@ -23,45 +22,9 @@ from ..core.types import Goal, GoalStatus, Message, MessageType, Role
 
 logger = logging.getLogger(__name__)
 
-# Regex to match a tool call produced by the LLM.
-# Format:  TOOL_CALL: tool_name(param_name="value", param2=123)
-_TOOL_CALL_RE = re.compile(
-    r"TOOL_CALL:\s*(?P<name>\w+)\s*"
-    r"\((?P<args>.*)\)\s*$",
-    re.MULTILINE | re.DOTALL,
-)
 
-
-def _parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a ``TOOL_CALL: name(key="val", ...)`` line from LLM output.
-
-    Returns ``(tool_name, {arg_name: arg_value})`` or ``None``.
-    """
-    m = _TOOL_CALL_RE.search(text)
-    if not m:
-        return None
-
-    name = m.group("name")
-    raw_args = m.group("args").strip()
-
-    args: dict[str, Any] = {}
-    if raw_args:
-        for pair in re.finditer(r'(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|\S+?)\s*(?:,|$)', raw_args):
-            key = pair.group(1)
-            val: Any = pair.group(2)
-            if val.startswith('"') and val.endswith('"'):
-                val = val[1:-1]
-            else:
-                try:
-                    val = int(val)
-                except ValueError:
-                    try:
-                        val = float(val)
-                    except ValueError:
-                        pass
-            args[key] = val
-
-    return name, args
+class ClarificationNeeded(Exception):
+    """Raised by a worker when it cannot complete a goal and needs the manager to clarify."""
 
 
 class AgentLoop:
@@ -89,6 +52,16 @@ class AgentLoop:
         self._running = True
         sub = self.bus.subscribe(self.handle.node_id, self._on_message)
         self._subscriptions.append(sub)
+
+        # Restore any goals that were in-flight before a crash
+        for goal in self.bus.get_active_goals():
+            if goal.assignee_id == self.handle.node_id:
+                self._active_goals[goal.goal_id] = goal
+                logger.info(
+                    "Restored persisted goal %s for agent %s",
+                    goal.goal_id, self.handle.name,
+                )
+
         logger.info("Agent %s started, listening on '%s'", self.handle.name, self.handle.node_id)
 
     async def stop(self) -> None:
@@ -111,6 +84,8 @@ class AgentLoop:
             asyncio.create_task(self._handle_query(message))
         elif message.type == MessageType.STATUS:
             asyncio.create_task(self._handle_status(message))
+        elif message.type == MessageType.CLARIFY:
+            asyncio.create_task(self._handle_clarify(message))
 
     async def _handle_goal(self, message: Message) -> None:
         """Process an incoming goal delegation."""
@@ -142,6 +117,68 @@ class AgentLoop:
             )
             await self.bus.publish(reply)
 
+        except ClarificationNeeded as clarify:
+            # Worker cannot complete the goal — ask the manager for help
+            logger.info(
+                "Agent %s needs clarification on goal %s: %s",
+                self.handle.name, goal.goal_id, clarify,
+            )
+
+            clarify_msg = self._make_clarify_message(
+                message=message,
+                question=str(clarify),
+            )
+            await self.bus.publish(clarify_msg)
+
+            # Pause and wait for the manager to respond
+            response = await self._wait_for_clarify_response(
+                goal_id=goal.goal_id,
+                timeout=60.0,
+            )
+
+            if response is not None:
+                # Retry with clarified instructions
+                goal.description = f"{message.content}\n\nClarification from manager: {response.content}"
+                try:
+                    result = await self._execute_goal(goal)
+                    goal.status = GoalStatus.COMPLETED
+                    goal.result = result
+
+                    reply = create_result_message(
+                        sender=self.handle.node_id,
+                        recipient=message.sender,
+                        result=result,
+                        goal_id=message.goal_id,
+                        correlation_id=message.correlation_id,
+                    )
+                    await self.bus.publish(reply)
+                except ClarificationNeeded:
+                    # Still stuck after clarification — give up
+                    goal.status = GoalStatus.FAILED
+                    goal.error = "Unable to complete even after clarification"
+                    reply = Message(
+                        type=MessageType.ERROR,
+                        sender=self.handle.node_id,
+                        recipient=message.sender,
+                        content="Worker unable to complete goal after clarification",
+                        goal_id=message.goal_id,
+                        correlation_id=message.correlation_id,
+                    )
+                    await self.bus.publish(reply)
+            else:
+                # No response from manager — fail
+                goal.status = GoalStatus.FAILED
+                goal.error = "Manager did not respond to clarification request"
+                reply = Message(
+                    type=MessageType.ERROR,
+                    sender=self.handle.node_id,
+                    recipient=message.sender,
+                    content="Worker timed out waiting for clarification",
+                    goal_id=message.goal_id,
+                    correlation_id=message.correlation_id,
+                )
+                await self.bus.publish(reply)
+
         except Exception as e:
             goal.status = GoalStatus.FAILED
             goal.error = str(e)
@@ -160,57 +197,140 @@ class AgentLoop:
             self.handle.complete_goal(result)
             self._active_goals.pop(goal.goal_id, None)
 
-    async def _execute_goal(self, goal: Goal) -> str:
-        """Execute a goal directly.
+    def _make_clarify_message(self, message: Message, question: str) -> Message:
+        """Create a CLARIFY message addressed to the original sender."""
+        return Message(
+            type=MessageType.CLARIFY,
+            sender=self.handle.node_id,
+            recipient=message.sender,
+            content=question,
+            goal_id=message.goal_id,
+            correlation_id=message.correlation_id,
+            in_reply_to=message.message_id,
+        )
 
-        WORKER agents execute goals by calling the LLM.
-        If tools are registered, the LLM can invoke tools iteratively —
-        the loop continues until the LLM produces a final text response
-        (no tool call) or the iteration limit is reached.
-        Falls back to a simple result if no LLM client is configured.
+    async def _wait_for_clarify_response(self, goal_id: str, timeout: float) -> Message | None:
+        """Subscribe and wait for a CLARIFY reply targeting the given goal."""
+        future: asyncio.Future[Message] = asyncio.get_event_loop().create_future()
+
+        async def _clarify_listener(msg: Message) -> None:
+            if not future.done():
+                future.set_result(msg)
+
+        sub = self.bus.subscribe(self.handle.node_id, _clarify_listener)
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            sub.unsubscribe()
+
+    async def _handle_clarify(self, message: Message) -> None:
+        """A manager receives a CLARIFY from a worker — ask LLM and respond."""
+        logger.info(
+            "Manager %s handling CLARIFY from %s: %s",
+            self.handle.name, message.sender, message.content,
+        )
+
+        if not self.llm_func:
+            # No LLM — just acknowledge (worker will retry with original goal)
+            reply = Message(
+                type=MessageType.CLARIFY,
+                sender=self.handle.node_id,
+                recipient=message.sender,
+                content="Re-try the original goal with your best judgment.",
+                goal_id=message.goal_id,
+                correlation_id=message.correlation_id,
+                in_reply_to=message.message_id,
+            )
+            await self.bus.publish(reply)
+            return
+
+        # Ask the LLM to provide clearer instructions
+        clarification = await self.llm_func(
+            f"A worker ({message.sender}) needs clarification on a goal.\n\n"
+            f"The worker says: {message.content}\n\n"
+            f"Provide clearer, more specific instructions so the worker can "
+            f"complete the goal. Be concrete and actionable.",
+            {"role": self.handle.role.value},
+        )
+
+        reply = Message(
+            type=MessageType.CLARIFY,
+            sender=self.handle.node_id,
+            recipient=message.sender,
+            content=clarification,
+            goal_id=message.goal_id,
+            correlation_id=message.correlation_id,
+            in_reply_to=message.message_id,
+        )
+        await self.bus.publish(reply)
+
+    async def _execute_goal(self, goal: Goal) -> str:
+        """Execute a goal directly using LiteLLM native tool calling.
+
+        WORKER agents execute goals by calling the LLM. If tools are
+        registered, the LLM can invoke them through the structured
+        function-calling API (no brittle regex parsing). The loop
+        continues until the LLM produces a final text response or the
+        iteration limit is reached.
+
+        Raises ``ClarificationNeeded`` if the goal cannot be completed
+        and the manager must provide clearer instructions.
         """
         if not self.llm_func:
             return f"[{self.handle.name}] executed: {goal.description}"
 
         prompt = self._build_tool_prompt(goal.description)
         conversation = [prompt]
+        openai_tools = (
+            self.tool_registry.get_openai_tools()
+            if self.tool_registry and self.tool_registry.tool_count > 0
+            else None
+        )
 
         for iteration in range(self.max_tool_iterations):
             response = await self.llm_func(
                 conversation[-1] if len(conversation) == 1
                 else f"{conversation[-1]}\n\n[CONTEXT]\n{goal.description}",
                 {"role": self.handle.role.value, "iteration": iteration},
+                tools=openai_tools,
             )
 
-            parsed = _parse_tool_call(response)
-            if parsed is None:
-                return response
+            # No tool call -> final answer
+            if not response.tool_calls:
+                return response.content or ""
 
-            tool_name, tool_args = parsed
-            tool = self.tool_registry.get_tool(tool_name) if self.tool_registry else None
-            if tool is None:
-                return (
-                    f"Tool '{tool_name}' is not available. "
-                    f"Available tools: {self.tool_registry.list_capabilities() if self.tool_registry else 'none'}"
-                )
+            # Execute each tool call the LLM made
+            for tc in response.tool_calls:
+                tool = self.tool_registry.get_tool(tc.name) if self.tool_registry else None
+                if tool is None:
+                    conversation.append(
+                        f"[Tool '{tc.name}' is not available. "
+                        f"Available tools: {self.tool_registry.list_capabilities() if self.tool_registry else 'none'}]"
+                    )
+                    continue
 
-            result = await tool.execute(**tool_args)
-            if result.success:
-                conversation.append(
-                    f"[Tool '{tool_name}' returned]:\n{result.output}"
-                )
-            else:
-                conversation.append(
-                    f"[Tool '{tool_name}' error]:\n{result.error}"
-                )
+                result = await tool.execute(**tc.arguments)
+                if result.success:
+                    conversation.append(
+                        f"[Tool '{tc.name}' returned]:\n{result.output}"
+                    )
+                else:
+                    conversation.append(
+                        f"[Tool '{tc.name}' error]:\n{result.error}"
+                    )
 
-        return (
-            f"[{self.handle.name}] max tool iterations ({self.max_tool_iterations}) "
-            f"reached. Last response: {response}"
+        # Worker exhausted all tool iterations without producing a final answer
+        raise ClarificationNeeded(
+            f"I am {self.handle.name} and I could not complete the goal after "
+            f"{self.max_tool_iterations} tool iterations. "
+            f"The goal may be too complex or ambiguous. "
+            f"Please provide more specific, step-by-step instructions."
         )
 
     def _build_tool_prompt(self, goal: str) -> str:
-        """Build the initial LLM prompt with tool descriptions injected."""
+        """Build the initial LLM prompt."""
         lines = [
             f"You are {self.handle.name}, a {self.handle.role.value} agent.",
             "",
@@ -219,17 +339,9 @@ class AgentLoop:
         ]
 
         if self.tool_registry and self.tool_registry.tool_count > 0:
-            lines.append("You have access to the following tools:")
+            lines.append("You have access to tools — use them when needed to accomplish the goal.")
             lines.append("")
             lines.append(self.tool_registry.list_capabilities())
-            lines.append("")
-            lines.append(
-                "To use a tool, respond with a TOOL_CALL line exactly like this:\n"
-                'TOOL_CALL: tool_name(param1="value1", param2="value2")\n\n'
-                "After the tool returns, you will see its result. "
-                "Continue calling tools or respond with your final answer.\n"
-                "When you are done, respond with your final answer without a TOOL_CALL line."
-            )
         else:
             lines.append("Respond with the result of your work.")
             lines.append("")

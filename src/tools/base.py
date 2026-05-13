@@ -58,6 +58,17 @@ class BaseTool(ABC):
 
         return "\n".join(lines)
 
+    def to_openai_tool(self) -> dict:
+        """Return this tool as an OpenAI-compatible function tool definition."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
 
 class ToolRegistry:
     """Registry of available tools.
@@ -101,6 +112,10 @@ class ToolRegistry:
             parts.append(tool.to_llm_description())
             parts.append("")
         return "\n".join(parts)
+
+    def get_openai_tools(self) -> list[dict]:
+        """Return all tools as OpenAI-compatible tool definitions."""
+        return [tool.to_openai_tool() for tool in self._tools.values()]
 
     @property
     def tool_count(self) -> int:

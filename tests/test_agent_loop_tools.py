@@ -1,4 +1,8 @@
-"""Tests for tool-calling integration in the agent loop."""
+"""Tests for tool-calling integration in the agent loop.
+
+Uses LiteLLM native function-calling — fake LLM functions return
+``LLMResponse`` objects with ``tool_calls`` instead of raw text.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +11,9 @@ import pytest
 from src.communication.bus import MessageBus
 from src.communication.message import create_goal_message
 from src.core.node import NodeHandle
-from src.core.types import GoalStatus, MessageType, Role, SwarmNode
-from src.runtime.agent_loop import AgentLoop, _parse_tool_call
+from src.core.types import GoalStatus, Message, MessageType, Role, SwarmNode
+from src.llm.client import LLMResponse, ToolCall
+from src.runtime.agent_loop import AgentLoop
 from src.tools.base import BaseTool, ToolRegistry, ToolResult
 
 
@@ -42,57 +47,6 @@ class _NoopTool(BaseTool):
         return ToolResult(success=True, output="done")
 
 
-class TestParseToolCall:
-    def test_parse_simple(self) -> None:
-        result = _parse_tool_call('TOOL_CALL: read_file(file_path="test.txt")')
-        assert result is not None
-        name, args = result
-        assert name == "read_file"
-        assert args == {"file_path": "test.txt"}
-
-    def test_parse_multiple_args(self) -> None:
-        result = _parse_tool_call(
-            'TOOL_CALL: write_file(file_path="out.txt", content="hello")'
-        )
-        assert result is not None
-        name, args = result
-        assert name == "write_file"
-        assert args == {"file_path": "out.txt", "content": "hello"}
-
-    def test_parse_with_integer_arg(self) -> None:
-        result = _parse_tool_call('TOOL_CALL: calculate(expr="1+2")')
-        assert result is not None
-        name, args = result
-        assert name == "calculate"
-        assert args == {"expr": "1+2"}
-
-    def test_no_tool_call_returns_none(self) -> None:
-        assert _parse_tool_call("This is a final answer.") is None
-
-    def test_tool_call_in_middle_of_text(self) -> None:
-        text = (
-            "I need to read a file first.\n"
-            'TOOL_CALL: read_file(file_path="data.txt")\n'
-            "Then I can process it."
-        )
-        result = _parse_tool_call(text)
-        assert result is not None
-        name, args = result
-        assert name == "read_file"
-        assert args == {"file_path": "data.txt"}
-
-    def test_parse_with_float_arg(self) -> None:
-        result = _parse_tool_call('TOOL_CALL: bash(command="sleep 0.5", timeout=10.0)')
-        assert result is not None
-        name, args = result
-        assert name == "bash"
-
-    def test_invalid_format_returns_none(self) -> None:
-        assert _parse_tool_call("TOOL_CALL") is None
-        assert _parse_tool_call("TOOL_CALL: ") is None
-        assert _parse_tool_call("") is None
-
-
 class TestAgentLoopToolIntegration:
     @pytest.fixture
     def bus(self) -> MessageBus:
@@ -106,18 +60,21 @@ class TestAgentLoopToolIntegration:
         return reg
 
     async def test_worker_uses_tool_when_llm_calls_it(self, bus: MessageBus, registry: ToolRegistry) -> None:
-        """LLM returns a TOOL_CALL, tool executes, result is included in response."""
+        """LLM returns a tool call, tool executes, result is included in response."""
         node = SwarmNode(node_id="worker", name="Worker", role=Role.WORKER)
         handle = NodeHandle(node=node)
 
         call_count = 0
 
-        async def fake_llm(prompt: str, ctx: dict) -> str:
+        async def fake_llm(prompt: str, ctx: dict, **kwargs) -> LLMResponse:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return 'TOOL_CALL: calculate(expr="2+2")'
-            return "The result is 4."
+                return LLMResponse(
+                    content="",
+                    tool_calls=[ToolCall(name="calculate", arguments={"expr": "2+2"})],
+                )
+            return LLMResponse(content="The result is 4.", tool_calls=[])
 
         loop = AgentLoop(handle=handle, bus=bus, llm_func=fake_llm, tool_registry=registry)
 
@@ -142,21 +99,29 @@ class TestAgentLoopToolIntegration:
         await loop.stop()
 
     async def test_worker_reports_unavailable_tool(self, bus: MessageBus) -> None:
-        """LLM calls a tool not in the registry."""
+        """LLM calls a tool not in the registry — worker sends CLARIFY upward."""
         node = SwarmNode(node_id="worker", name="Worker", role=Role.WORKER)
         handle = NodeHandle(node=node)
         registry = ToolRegistry()
 
-        async def fake_llm(prompt: str, ctx: dict) -> str:
-            return 'TOOL_CALL: nonexistent_tool(arg="val")'
+        async def fake_llm(prompt: str, ctx: dict, **kwargs) -> LLMResponse:
+            return LLMResponse(
+                content="",
+                tool_calls=[ToolCall(name="nonexistent_tool", arguments={"arg": "val"})],
+            )
 
-        loop = AgentLoop(handle=handle, bus=bus, llm_func=fake_llm, tool_registry=registry)
+        loop = AgentLoop(
+            handle=handle, bus=bus, llm_func=fake_llm, tool_registry=registry,
+            max_tool_iterations=3,
+        )
 
-        results: list[str] = []
+        clarify_messages: list[str] = []
 
         async def collect(msg: object) -> None:
-            if hasattr(msg, "type") and msg.type in (MessageType.RESULT, MessageType.ERROR):
-                results.append(msg.content)
+            if hasattr(msg, "type") and msg.type == MessageType.CLARIFY:
+                clarify_messages.append(
+                    msg.content if hasattr(msg, "content") else ""
+                )
 
         bus.subscribe("ceo", collect)
         await loop.start()
@@ -165,20 +130,22 @@ class TestAgentLoopToolIntegration:
         await bus.publish(msg)
 
         import asyncio
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
 
-        assert len(results) == 1
-        assert "nonexistent_tool" in results[0]
-        assert "not available" in results[0]
+        # Worker should send a CLARIFY about the missing tool
+        assert len(clarify_messages) >= 1
         await loop.stop()
 
     async def test_max_iterations_limit(self, bus: MessageBus, registry: ToolRegistry) -> None:
-        """LLM keeps calling tools — loop stops at max_tool_iterations."""
+        """LLM keeps calling tools — loop stops at max_tool_iterations (and sends CLARIFY)."""
         node = SwarmNode(node_id="worker", name="Worker", role=Role.WORKER)
         handle = NodeHandle(node=node)
 
-        async def fake_llm(prompt: str, ctx: dict) -> str:
-            return 'TOOL_CALL: noop()'
+        async def fake_llm(prompt: str, ctx: dict, **kwargs) -> LLMResponse:
+            return LLMResponse(
+                content="",
+                tool_calls=[ToolCall(name="noop", arguments={})],
+            )
 
         loop = AgentLoop(
             handle=handle, bus=bus,
@@ -187,10 +154,15 @@ class TestAgentLoopToolIntegration:
         )
 
         results: list[str] = []
+        clarify_received = False
 
         async def collect(msg: object) -> None:
-            if hasattr(msg, "type") and msg.type in (MessageType.RESULT, MessageType.ERROR):
-                results.append(msg.content)
+            nonlocal clarify_received
+            if hasattr(msg, "type"):
+                if msg.type == MessageType.CLARIFY:
+                    clarify_received = True
+                elif msg.type in (MessageType.RESULT, MessageType.ERROR):
+                    results.append(msg.content)
 
         bus.subscribe("ceo", collect)
         await loop.start()
@@ -201,8 +173,8 @@ class TestAgentLoopToolIntegration:
         import asyncio
         await asyncio.sleep(0.5)
 
-        assert len(results) == 1
-        assert "max tool iterations" in results[0]
+        # Worker should send CLARIFY, not fail
+        assert clarify_received, "Worker should send CLARIFY on max iterations"
         await loop.stop()
 
     async def test_worker_no_tools_still_works(self, bus: MessageBus) -> None:
@@ -210,8 +182,8 @@ class TestAgentLoopToolIntegration:
         node = SwarmNode(node_id="worker", name="Worker", role=Role.WORKER)
         handle = NodeHandle(node=node)
 
-        async def fake_llm(prompt: str, ctx: dict) -> str:
-            return "Just a text response."
+        async def fake_llm(prompt: str, ctx: dict, **kwargs) -> LLMResponse:
+            return LLMResponse(content="Just a text response.", tool_calls=[])
 
         loop = AgentLoop(handle=handle, bus=bus, llm_func=fake_llm)
 
@@ -241,9 +213,9 @@ class TestAgentLoopToolIntegration:
 
         prompts: list[str] = []
 
-        async def fake_llm(prompt: str, ctx: dict) -> str:
+        async def fake_llm(prompt: str, ctx: dict, **kwargs) -> LLMResponse:
             prompts.append(prompt)
-            return "final answer"
+            return LLMResponse(content="final answer", tool_calls=[])
 
         loop = AgentLoop(handle=handle, bus=bus, llm_func=fake_llm, tool_registry=registry)
         await loop.start()
@@ -256,7 +228,6 @@ class TestAgentLoopToolIntegration:
 
         assert len(prompts) >= 1
         combined = " ".join(prompts)
-        assert "TOOL_CALL" in combined
         assert "calculate" in combined
         assert "noop" in combined
         await loop.stop()

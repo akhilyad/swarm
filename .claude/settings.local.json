@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "Bash(Get-ChildItem *)",
+      "Bash(cp -r /c/Users/akhil/Desktop/swarm_temp/. /c/Users/akhil/Desktop/hyrex/)",
+      "Bash(rm -rf /c/Users/akhil/Desktop/swarm_temp)",
+      "Bash(pip install *)",
+      "Bash(HYREX_SKIP_DOCKER_TESTS=1 python *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(cmd *)",
+      "Bash(python -m pytest tests/ -x --tb=short -v)",
+      "Bash(python -m pytest tests/test_agent_loop_tools.py -x --tb=long -v)",
+      "Bash(python -m pytest tests/ --tb=short -v)",
+      "PowerShell($env:HYREX_SKIP_DOCKER_TESTS=1; cd C:\\\\Users\\\\akhil\\\\Desktop\\\\hyrex; python -m pytest tests/ --tb=short -v)",
+      "PowerShell($env:HYREX_SKIP_DOCKER_TESTS=1; cd C:\\\\Users\\\\akhil\\\\Desktop\\\\hyrex; python -m pytest tests/test_tools_builtin.py --tb=short -v)"
+    ]
+  }
+}

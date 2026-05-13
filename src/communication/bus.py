@@ -5,15 +5,22 @@ different processes, machines, or containers. The public API
 (``subscribe``, ``unsubscribe``, ``publish``, ``publish_to_many``)
 is identical to the original in-memory bus — existing code continues
 to work unchanged.
+
+Every published message is persisted to SQLite so active goals survive
+a process restart.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import sqlite3
+import threading
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from ..core.types import Message
+from ..core.types import Goal, GoalStatus, Message
 
 try:
     import nats as _nats
@@ -55,12 +62,113 @@ class MessageBus:
         await bus.disconnect()
     """
 
-    def __init__(self, nats_url: str = "nats://localhost:4222") -> None:
+    def __init__(self, nats_url: str = "nats://localhost:4222", db_path: str | Path | None = None) -> None:
         self._nats_url = nats_url
         self._nc: Any = None
         self._local_subscriptions: dict[str, dict[SubscriptionId, MessageHandler]] = {}
         self._nats_subs: list[Any] = []
         self._next_id: SubscriptionId = 0
+
+        # SQLite persistence — one writer thread, WAL mode for safety
+        db_path = Path(db_path or "./data/messages.db")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._db_path = str(db_path)
+        self._db_lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self) -> None:
+        """Create the messages table if it does not exist."""
+        with self._db_lock:
+            conn = sqlite3.connect(self._db_path)
+            try:
+                conn.executescript(
+                    """
+                    PRAGMA journal_mode=WAL;
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        message_id TEXT UNIQUE NOT NULL,
+                        sender TEXT NOT NULL,
+                        recipient TEXT,
+                        goal_id TEXT,
+                        type TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        status TEXT DEFAULT 'pending',
+                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_messages_goal_id ON messages(goal_id);
+                    CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
+                    """
+                )
+            finally:
+                conn.close()
+
+    def _persist_message(self, message: Message) -> None:
+        """Insert a message into SQLite (runs in a thread)."""
+        from datetime import datetime, timezone
+
+        status = "pending"
+        if message.type.value in ("result", "error"):
+            status = "completed"
+        elif message.type.value == "cancel":
+            status = "cancelled"
+
+        with self._db_lock:
+            conn = sqlite3.connect(self._db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO messages
+                        (message_id, sender, recipient, goal_id, type, content, timestamp, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message.message_id,
+                        message.sender,
+                        message.recipient,
+                        message.goal_id,
+                        message.type.value,
+                        message.content,
+                        message.timestamp,
+                        status,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_active_goals(self) -> list[Goal]:
+        """Re-hydrate all pending goal messages into ``Goal`` objects.
+
+        Call this at startup to restore goals that were in-flight when
+        the process last crashed.
+        """
+        from datetime import datetime, timezone
+
+        with self._db_lock:
+            conn = sqlite3.connect(self._db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT content, goal_id, sender FROM messages "
+                    "WHERE type = 'goal' AND status = 'pending'"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        goals: list[Goal] = []
+        for content, goal_id, sender in rows:
+            if not goal_id:
+                continue
+            goals.append(
+                Goal(
+                    description=content,
+                    goal_id=goal_id,
+                    assignee_id=sender,
+                    status=GoalStatus.PENDING,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+        return goals
 
     async def connect(self) -> None:
         """Connect to the NATS server.
@@ -140,8 +248,13 @@ class MessageBus:
         - All listed recipients (if ``message.recipients`` is set)
         - All subscribers on the message type topic (e.g. ``type:goal``)
 
+        Every message is persisted to SQLite so active goals survive
+        a process restart.
+
         Returns the number of locally-dispatched handlers called.
         """
+        # Persist every message in a background thread (non-blocking)
+        await asyncio.to_thread(self._persist_message, message)
         targets: list[str] = []
 
         if message.recipient:

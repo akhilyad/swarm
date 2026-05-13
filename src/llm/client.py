@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+from collections import namedtuple
 from typing import Any
+
+# Structured response when the LLM calls a tool via native function-calling.
+ToolCall = namedtuple("ToolCall", ["name", "arguments"])
+LLMResponse = namedtuple("LLMResponse", ["content", "tool_calls"])
 
 import tenacity
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -50,7 +56,8 @@ class LLMClient:
         model: str | None = None,
         max_tokens: int = 2048,
         temperature: float = 0.7,
-    ) -> str:
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
         """Generate a response from the LLM with rate limiting and retries.
 
         Args:
@@ -59,20 +66,26 @@ class LLMClient:
             model: Override the default model for this request.
             max_tokens: Maximum tokens in the response.
             temperature: Sampling temperature.
+            tools: Optional list of OpenAI-compatible tool definitions. When
+                   provided the LLM may return structured tool calls instead
+                   of plain text.
 
         Returns:
-            The generated text response.
+            An ``LLMResponse(content, tool_calls)``. If the LLM chose to
+            call a tool, ``tool_calls`` is a list of ``ToolCall`` namedtuples
+            and ``content`` is the optional text part. Otherwise ``tool_calls``
+            is empty.
         """
         actual_model = model or self.default_model
         system_prompt = self._build_system_prompt(context or {})
 
         async with self._semaphore:
             self.request_count += 1
-            content = await self._request_with_retry(
-                actual_model, system_prompt, prompt, max_tokens, temperature
+            response = await self._request_with_retry(
+                actual_model, system_prompt, prompt, max_tokens, temperature, tools
             )
             self._check_budget()
-            return content
+            return response
 
     @retry(
         stop=stop_after_attempt(3),
@@ -94,12 +107,13 @@ class LLMClient:
         prompt: str,
         max_tokens: int,
         temperature: float,
-    ) -> str:
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
         """Make the actual LiteLLM call, wrapped with tenacity retry logic."""
         try:
             import litellm
 
-            response = await litellm.acompletion(
+            kwargs = dict(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -108,13 +122,28 @@ class LLMClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
+            if tools:
+                kwargs["tools"] = tools
 
-            content = response.choices[0].message.content or ""
+            response = await litellm.acompletion(**kwargs)
+
+            choice = response.choices[0]
+            message = choice.message
+            content = message.content or ""
+
+            tool_calls: list[ToolCall] = []
+            if message.tool_calls:
+                for tc in message.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        args = {}
+                    tool_calls.append(ToolCall(name=tc.function.name, arguments=args))
 
             if hasattr(response, "usage") and hasattr(response.usage, "cost"):
                 self.total_cost += response.usage.cost or 0.0
 
-            return content
+            return LLMResponse(content=content, tool_calls=tool_calls)
 
         except ImportError:
             raise LLMError("LiteLLM is not installed. Run: pip install litellm")

@@ -45,6 +45,7 @@ class MessageType(str, Enum):
     STATUS = "status"
     DELEGATE = "delegate"
     SYNTHESIS = "synthesis"
+    CLARIFY = "clarify"
 
 
 class SwarmNode(BaseModel):
