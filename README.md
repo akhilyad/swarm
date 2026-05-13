@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/hyrex_logo.svg" alt="Hyrex — Hierarchical AI Agent Workforce Platform" width="600">
+<img src="./hyrex_logo.svg" alt="Hyrex — Hierarchical AI Agent Workforce Platform" width="600">
 
 <br>
 
