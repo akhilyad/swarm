@@ -7,58 +7,60 @@
 </p>
 
 <h1 align="center">
-  🐝 Swarm of Swarms
+  Swarm of Swarms
 </h1>
 
 <p align="center">
-  <em>Because one AI is a party trick, but a whole company of them is a business plan.</em>
+  <em>One AI is a party trick. A whole company of them? That's a business plan.</em>
 </p>
 
 <p align="center">
-  <b>Hierarchical AI Agent Workforce Platform</b> — <i>CEO delegates to Managers who delegate to Workers,<br>
-  each department is itself a self-similar swarm. It's turtles all the way down.</i>
+  <b>Hierarchical AI Agent Workforce Platform</b> — <i>a CEO agent plans, managers delegate, employees execute.<br>
+  Every department is itself a swarm. It's agents all the way down.</i>
 </p>
 
 ---
 
-## What Is This Madness?
+## What is this?
 
-**Swarm of Swarms** is an open-source framework for running **hierarchical AI agent swarms** modeled after a real company. You give a CEO agent a high-level goal, and it:
+**Swarm of Swarms** is an open-source framework that runs a **company of AI agents** inside your terminal.
 
-1. **Decomposes** the goal into strategic initiatives
-2. **Delegates** them to department managers
-3. Who **decompose again** and delegate to workers
-4. Who **execute** by calling LLMs, tools, and memory
-5. **Results flow back up**, with each level synthesizing before reporting
+You give a goal to the CEO agent, and it:
 
-The result? A literal AI company that works on your problems while you sleep. No HR department required.
+1. **Plans** — breaks your goal into strategic pieces
+2. **Delegates** — assigns work to department managers
+3. **Sub-delegates** — managers break work down further and hand it to employees
+4. **Executes** — employees call LLMs, run tools, and query memory
+5. **Reports back** — results flow up the chain, each level summarizing before passing along
 
-### The Vibe
+The result: a literal AI company working on your problems. No office, no HR, no ping-pong table.
+
+### The Structure
 
 ```
                     CEO (strategic planner)
                    /          |            \
           Dept Manager    Dept Manager    Dept Manager
          /    |    \      /    |   \      /    |    \
-       Wkr  Wkr  Wkr    Wkr  Wkr  Wkr    Wkr  Wkr  Wkr
+    Employee Employee  Employee Employee  Employee Employee
 
-  ─── Each manager IS ALSO a swarm ───
-  ─── Departments can grow into sub-companies ───
-  ─── Workers are leaf nodes with tool access ───
-  ─── Your computer becomes a beehive of AI productivity ───
+  Each manager IS ALSO a swarm
+  Departments can grow into sub-companies
+  Employees are workers with tool access
+  Your computer becomes a beehive of AI productivity
 ```
 
-## Why Though?
+## Why?
 
 | Problem | Solution |
 |---------|----------|
-| Single LLM calls are dumb | Hierarchical decomposition produces smarter results |
-| Flat agent swarms are chaotic | Tree structure = clear chain of command |
-| Agents need to communicate | Async message bus keeps everyone in the loop |
-| LLM costs spiral out of control | Budget tracking per run, per agent |
-| "It works on my machine" | Fully async, designed for distribution from day one |
+| One LLM call isn't very smart | Hierarchical planning produces much better results |
+| Flat swarms of agents are chaotic | Tree structure = clear chain of command |
+| Agents need to communicate without chaos | Async message bus keeps everyone in sync |
+| LLM costs can explode | Built-in budget tracking per run, per agent |
+| "Works on my machine" | Fully async, designed for distributed systems from day one |
 
-## Architecture (The Nerdy Bits)
+## How It Works (The Short Version)
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -69,83 +71,53 @@ The result? A literal AI company that works on your problems while you sleep. No
 │  Agent Loop │  Message Bus     │  Swarm Tree  │
 │  (per node) │  (pub/sub)       │  (registry)  │
 ├─────────────┴──────────────────┴──────────────┤
-│              Memory Layer (Chroma)             │
+│              Memory Layer (ChromaDB)          │
 ├──────────────────────────────────────────────┤
 │              LLM Layer (LiteLLM)              │
 └──────────────────────────────────────────────┘
 ```
 
-### Key Concepts
+**The key ideas:**
 
-- **Holarchy** — Each manager IS a swarm. A department manager can spin up a sub-company by loading a sub-swarm config. Recursion all the way down.
-- **Message Bus** — Agents never call each other directly. They publish messages, other agents consume them. This means agents can live on different machines, different processes, or different continents.
-- **Self-Similar** — The same pattern works at every scale. 3 agents or 3000, the architecture stays the same.
+- **Holarchy** — Every manager IS a swarm. A department manager can spin up an entire sub-company by loading a sub-swarm config. Recursion all the way down.
+- **Message Bus** — Agents never call each other directly. They publish messages, others consume them. This means agents can live on different machines, different processes, or different continents.
+- **Self-Similar** — Same pattern works at every scale. 3 agents or 3000, the architecture doesn't change.
 
 ## Quick Start
 
-### Installation
+### Install
 
 ```bash
-# Clone the repo
 git clone https://github.com/akhilyad/swarm.git
 cd swarm
-
-# Install dependencies (Python 3.11+ required)
 pip install -e .
 ```
 
-### Run a Simulation (No LLM Required)
+### Simulate (No API Key Needed)
 
 ```bash
-# See the hierarchy in action with simulated agents
 swarm simulate --config configs/examples/software-dev.yaml --goal "Design a task management API"
-
-# Output:
-# 🐝 CEO decomposes the goal...
-#   👔 PM-Dept assigns sub-tasks...
-#     🔧 Researcher executes...
-#     ✍️ Writer executes...
-#   👔 Engineering assigns sub-tasks...
-#     🔧 Developer executes...
-#     🔧 QA-Engineer executes...
-#   👔 Design assigns sub-tasks...
-#     🎨 Designer executes...
-# 📋 Results flow back up...
-# ✅ Mission complete!
 ```
 
-### Run with Real LLMs
+You'll see the CEO decompose the goal, managers delegate sub-tasks, and employees execute. All simulated — zero LLM cost.
+
+### Run With Real AI
 
 ```bash
-# Set your API key
 export OPENAI_API_KEY="sk-..."
-# Or ANTHROPIC_API_KEY="sk-ant-..."
-
-# Let the swarm loose
 swarm run --config configs/examples/software-dev.yaml --goal "Design a task management API"
 ```
 
-### Or Just Poke Around
+### Explore the Company
 
 ```bash
-# List all agents in the company
 swarm agents --config configs/examples/software-dev.yaml
-
-# Output:
-# 🐝 CEO (CEO) ── Top-level strategist
-#   ├── 👔 PM-Dept (MANAGER) ── Project management department
-#   │   ├── 🔧 Researcher (WORKER)
-#   │   └── ✍️ Writer (WORKER)
-#   ├── 👔 Engineering (MANAGER) ── Engineering department
-#   │   ├── 🔧 Developer (WORKER)
-#   │   └── 🔧 QA-Engineer (WORKER)
-#   └── 👔 Design (MANAGER) ── Design department
-#       └── 🎨 Designer (WORKER)
+# Shows: CEO → Managers → Employees with roles and hierarchy
 ```
 
-## Configuration
+## Example Config
 
-Define your company in YAML:
+Define your AI company in YAML:
 
 ```yaml
 name: "Software Dev Agency"
@@ -162,21 +134,15 @@ agents:
     name: "PM-Dept"
     role: MANAGER
     parent: ceo
-    children: [worker-1, worker-2]
+    children: [researcher, writer]
 
-  worker-1:
+  researcher:
     name: "Researcher"
     role: WORKER
     parent: pm
-
-  worker-2:
-    name: "Writer"
-    role: WORKER
-    parent: pm
-  # ... etc
 ```
 
-Drop in more example configs in `configs/examples/` or roll your own. Make a marketing agency, a research lab, a legal firm, a squad of AI chaos gremlins — the world is your oyster.
+Drop in more configs or build your own — marketing agency, research lab, legal firm, or a squad of AI chaos gremlins. Your call.
 
 ## Project Structure
 
@@ -188,9 +154,9 @@ swarm-of-swarms/
 │   ├── research.yaml        # 6-agent research firm
 │   └── general.yaml         # 7-agent general company
 ├── src/
-│   ├── cli.py               # Swarm CLI (click-based)
+│   ├── cli.py               # CLI (click-based)
 │   ├── core/
-│   │   ├── types.py         # Data models (SwarmNode, Goal, Role)
+│   │   ├── types.py         # Data models
 │   │   ├── config.py        # YAML config loader
 │   │   ├── node.py          # NodeHandle runtime wrapper
 │   │   └── errors.py        # Custom exceptions
@@ -221,40 +187,40 @@ swarm-of-swarms/
 ## Testing
 
 ```bash
-# Run all 60 tests (they all pass, obviously)
+# 60 tests, all passing
 pytest -v
 
 # With coverage
 pytest --cov=src --cov-report=term-missing
 ```
 
-## Roadmap (Post-MVP)
+## Roadmap
 
-- [ ] **Web Dashboard** — Real-time swarm visualization because watching AI agents work is hypnotic
-- [ ] **Tool Plugins** — Web search, file system, API access for your worker agents
-- [ ] **Distributed Agents** — Spread your swarm across machines like a IT crowd episode
-- [ ] **Persistent Memory** — Agents that remember what they did last session (like real employees!)
-- [ ] **Human-in-the-Loop** — Approval gates so your AI company doesn't go full Skynet
+- [ ] **Web Dashboard** — Watch your AI agents work in real time. It's hypnotic.
+- [ ] **Tool Plugins** — Give employees web search, file access, API calling powers
+- [ ] **Distributed Agents** — Spread your swarm across machines
+- [ ] **Persistent Memory** — Agents that remember what they did last session
+- [ ] **Human-in-the-Loop** — Approval gates so your AI company doesn't go rogue
 - [ ] **Template Marketplace** — Buy and sell company configs. "One AI Marketing Agency, please."
 
 ## Contributing
 
-PRs are welcome! If you can dream up a weirder, more efficient, or more dramatic way to organize AI agents, this is the place.
+PRs welcome. If you can dream up a weirder, more efficient, or more dramatic way to organize AI agents, this is the place.
 
 1. Fork it
-2. Create your feature branch (`git checkout -b feature/absurd-idea`)
-3. Commit your changes (`git commit -m 'Add some absurdity'`)
-4. Push to the branch (`git push origin feature/absurd-idea`)
-5. Open a PR and convince us it's genius
+2. Branch it (`git checkout -b feature/your-idea`)
+3. Commit it (`git commit -m 'Add your idea'`)
+4. Push it (`git push origin feature/your-idea`)
+5. Open a PR
 
 ## License
 
-MIT — Go forth and build your AI empire. Just don't blame us when your swarm unionizes.
+MIT — Go build your AI empire. Don't blame us when your swarm unionizes.
 
 ---
 
 <p align="center">
-  <sub>Built with 🍕 and existential dread by <a href="https://github.com/akhilyad">@akhilyad</a></sub>
+  <sub>Built with pizza and existential dread by <a href="https://github.com/akhilyad">@akhilyad</a></sub>
 </p>
 <p align="center">
   <sub><em>In a world of AGI hype, be a swarm.</em></sub>
