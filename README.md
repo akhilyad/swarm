@@ -1,8 +1,6 @@
 <div align="center">
 
-# Hyrex
-
-### Hierarchical AI Agent Workforce Platform
+<img src="docs/hyrex_logo.svg" alt="Hyrex — Hierarchical AI Agent Workforce Platform" width="600">
 
 <br>
 
