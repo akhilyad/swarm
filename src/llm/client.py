@@ -1,22 +1,31 @@
-"""LiteLLM wrapper with cost tracking and model routing."""
+"""LiteLLM wrapper with rate limiting, automatic retries, and cost tracking."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
+
+import tenacity
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..core.errors import LLMError
 
 logger = logging.getLogger(__name__)
 
+# Cap concurrent API requests to avoid provider rate limits
+_DEFAULT_MAX_CONCURRENT = 5
+
 
 class LLMClient:
-    """Async LLM client wrapping LiteLLM.
+    """Async LLM client wrapping LiteLLM with rate limiting and retries.
 
-    Provides:
+    Features:
     - Multi-provider support via LiteLLM (OpenAI, Anthropic, Google, local)
     - Per-request model override (agent-specific models)
+    - ``asyncio.Semaphore`` to cap concurrent API requests
+    - Exponential-backoff retries via ``tenacity`` for 429/503 errors
     - Cost tracking and budget enforcement
     """
 
@@ -24,6 +33,7 @@ class LLMClient:
         self,
         default_model: str | None = None,
         budget_usd: float | None = None,
+        max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
     ) -> None:
         self.default_model = default_model or os.environ.get(
             "SWARM_DEFAULT_MODEL", "gpt-4o"
@@ -31,6 +41,7 @@ class LLMClient:
         self.budget_usd = budget_usd
         self.total_cost = 0.0
         self.request_count = 0
+        self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def generate(
         self,
@@ -40,7 +51,7 @@ class LLMClient:
         max_tokens: int = 2048,
         temperature: float = 0.7,
     ) -> str:
-        """Generate a response from the LLM.
+        """Generate a response from the LLM with rate limiting and retries.
 
         Args:
             prompt: The prompt to send.
@@ -53,15 +64,43 @@ class LLMClient:
             The generated text response.
         """
         actual_model = model or self.default_model
-        self.request_count += 1
-
         system_prompt = self._build_system_prompt(context or {})
 
+        async with self._semaphore:
+            self.request_count += 1
+            content = await self._request_with_retry(
+                actual_model, system_prompt, prompt, max_tokens, temperature
+            )
+            self._check_budget()
+            return content
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        reraise=True,
+        retry=tenacity.retry_if_exception_type(
+            (LLMError, ConnectionError, TimeoutError)
+        ),
+        before_sleep=lambda retry_state: logger.info(
+            "LLM request failed (attempt %d), retrying in %.1fs ...",
+            retry_state.attempt_number,
+            retry_state.next_action.sleep if retry_state.next_action else 0,
+        ),
+    )
+    async def _request_with_retry(
+        self,
+        model: str,
+        system_prompt: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Make the actual LiteLLM call, wrapped with tenacity retry logic."""
         try:
             import litellm
 
             response = await litellm.acompletion(
-                model=actual_model,
+                model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
@@ -72,19 +111,17 @@ class LLMClient:
 
             content = response.choices[0].message.content or ""
 
-            # Track cost
             if hasattr(response, "usage") and hasattr(response.usage, "cost"):
                 self.total_cost += response.usage.cost or 0.0
-
-            self._check_budget()
 
             return content
 
         except ImportError:
-            raise LLMError(
-                "LiteLLM is not installed. Run: pip install litellm"
-            )
+            raise LLMError("LiteLLM is not installed. Run: pip install litellm")
         except Exception as e:
+            error_str = str(e).lower()
+            if "rate" in error_str or "429" in error_str or "503" in error_str or "too many" in error_str:
+                logger.warning("Rate-limited by provider: %s", e)
             raise LLMError(f"LLM generation failed: {e}")
 
     def _build_system_prompt(self, context: dict[str, Any]) -> str:

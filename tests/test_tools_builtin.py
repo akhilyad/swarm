@@ -1,6 +1,6 @@
 """Tests for the built-in tools.
 
-Many of these operate on the real filesystem / OS, so they live as
+Many operate on the real filesystem / Docker, so they live as
 integration-style tests rather than pure unit tests.
 """
 
@@ -18,6 +18,12 @@ from src.tools.builtin import (
     ReadFileTool,
     WebFetchTool,
     WriteFileTool,
+)
+
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("HYREX_SKIP_DOCKER_TESTS", "0") == "1",
+    reason="Docker-dependent tests skipped (HYREX_SKIP_DOCKER_TESTS=1)",
 )
 
 
@@ -87,6 +93,8 @@ class TestWriteFileTool:
 
 
 class TestBashTool:
+    """Tests require Docker (alpine:latest image)."""
+
     async def test_echo_command(self) -> None:
         tool = BashTool()
         result = await tool.execute(command='echo "hello from bash"')
@@ -113,6 +121,8 @@ class TestBashTool:
 
 
 class TestPythonExecTool:
+    """Tests require Docker (python:3.11-alpine image)."""
+
     async def test_simple_code(self) -> None:
         tool = PythonExecTool()
         result = await tool.execute(code='print("hello from python")')

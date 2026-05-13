@@ -47,7 +47,7 @@ class SwarmConfig:
             "name": self.name,
             "model": self.model,
             "budget_usd": self.budget_usd,
-            "agents": {k: v.to_dict() for k, v in self.agents.items()},
+            "agents": {k: v.model_dump() for k, v in self.agents.items()},
         }
 
 

@@ -1,4 +1,4 @@
-"""Tests for core data models."""
+"""Tests for core data models (Pydantic)."""
 
 from src.core.types import Goal, GoalStatus, MemoryEntry, Message, MessageType, Role, SwarmNode
 
@@ -32,19 +32,27 @@ class TestSwarmNode:
         assert not node.is_root
         assert node.is_leaf
 
-    def test_to_dict_roundtrip(self) -> None:
+    def test_model_dump_roundtrip(self) -> None:
         original = SwarmNode(
             node_id="test", name="Test", role=Role.MANAGER,
             parent_id="root", child_ids=["a", "b"],
             model="gpt-4o",
         )
-        data = original.to_dict()
-        restored = SwarmNode.from_dict(data)
+        data = original.model_dump()
+        restored = SwarmNode.model_validate(data)
         assert restored.node_id == original.node_id
         assert restored.name == original.name
         assert restored.role == original.role
         assert restored.parent_id == original.parent_id
         assert restored.child_ids == original.child_ids
+
+    def test_strict_validation_rejects_bad_role(self) -> None:
+        import pydantic
+        try:
+            SwarmNode(node_id="bad", name="Bad", role="INVALID")  # type: ignore[arg-type]
+            assert False, "Should have raised"
+        except pydantic.ValidationError:
+            pass
 
 
 class TestGoal:
@@ -58,18 +66,26 @@ class TestGoal:
         child = Goal(description="Child", parent_goal_id=parent.goal_id)
         assert child.parent_goal_id == "parent-1"
 
-    def test_to_dict_roundtrip(self) -> None:
+    def test_model_dump_roundtrip(self) -> None:
         original = Goal(
             description="Test goal",
             priority=2,
             max_retries=5,
             timeout_seconds=60.0,
         )
-        data = original.to_dict()
-        restored = Goal.from_dict(data)
+        data = original.model_dump()
+        restored = Goal.model_validate(data)
         assert restored.description == original.description
         assert restored.priority == original.priority
         assert restored.max_retries == original.max_retries
+
+    def test_strict_validation_rejects_bad_status(self) -> None:
+        import pydantic
+        try:
+            Goal(description="test", status="invalid_status")  # type: ignore[arg-type]
+            assert False, "Should have raised"
+        except pydantic.ValidationError:
+            pass
 
 
 class TestMessage:
@@ -89,13 +105,13 @@ class TestMessage:
         assert reply.correlation_id == original.message_id
         assert reply.in_reply_to == original.message_id
 
-    def test_to_dict_roundtrip(self) -> None:
+    def test_model_dump_roundtrip(self) -> None:
         original = Message(
             type=MessageType.GOAL, sender="ceo", content="test",
             recipient="worker", recipients=["w1", "w2"],
         )
-        data = original.to_dict()
-        restored = Message.from_dict(data)
+        data = original.model_dump()
+        restored = Message.model_validate(data)
         assert restored.type == original.type
         assert restored.sender == original.sender
         assert restored.content == original.content
@@ -107,10 +123,10 @@ class TestMemoryEntry:
         assert entry.agent_id == "ceo"
         assert entry.entry_type == "experience"
 
-    def test_to_dict_roundtrip(self) -> None:
+    def test_model_dump_roundtrip(self) -> None:
         original = MemoryEntry(agent_id="w1", content="data", entry_type="observation")
-        data = original.to_dict()
-        restored = MemoryEntry.from_dict(data)
+        data = original.model_dump()
+        restored = MemoryEntry.model_validate(data)
         assert restored.agent_id == original.agent_id
         assert restored.content == original.content
         assert restored.entry_type == original.entry_type

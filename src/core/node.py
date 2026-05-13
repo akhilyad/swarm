@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .types import Goal, Role, SwarmNode
+from .types import Goal, GoalStatus, Role, SwarmNode
 
 
 class NodeHandle:
@@ -53,22 +53,22 @@ class NodeHandle:
     def complete_goal(self, result: str) -> None:
         if self.current_goal:
             self.current_goal.result = result
-            self.current_goal.status = "completed"
+            self.current_goal.status = GoalStatus.COMPLETED
         self.is_active = False
         self.current_goal = None
 
     def fail_goal(self, error: str) -> None:
         if self.current_goal:
             self.current_goal.error = error
-            self.current_goal.status = "failed"
+            self.current_goal.status = GoalStatus.FAILED
         self.is_active = False
         self.current_goal = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "node": self.node.to_dict(),
+            "node": self.node.model_dump(),
             "is_active": self.is_active,
-            "current_goal": self.current_goal.to_dict() if self.current_goal else None,
+            "current_goal": self.current_goal.model_dump() if self.current_goal else None,
         }
 
     def __repr__(self) -> str:

@@ -1,27 +1,34 @@
-"""Tool that executes Python code snippets in a subprocess.
+"""Tool that executes Python code inside an isolated Docker container.
 
-WARNING: This tool provides arbitrary code execution. It runs in a
-subprocess with the same privileges as the parent process. Use with
-caution in untrusted environments.
+Every invocation spins up an ephemeral container running the code snippet.
+No host access, no network, destroyed immediately after execution.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
+import uuid
+
+import docker
+from docker.errors import DockerException, ImageNotFound
 
 from ..base import BaseTool, ToolResult
 
 
-class PythonExecTool(BaseTool):
-    """Execute a Python code snippet in a subprocess and return the output.
+_IMAGE = "python:3.11-alpine"
+_CONTAINER_MEMORY_LIMIT = "256m"
+_CONTAINER_CPU_LIMIT = 0.5
 
-    The code runs in an isolated subprocess with a restricted set of
-    builtins for safety. The globals dict is limited to safe names.
+
+class PythonExecTool(BaseTool):
+    """Execute a Python snippet inside an ephemeral Docker container.
+
+    Each call creates a fresh Python container, runs the code, captures
+    output, and destroys the container. No network, no host mounts.
     """
 
     name = "python_exec"
-    description = "Execute Python code and return its stdout/stderr output."
+    description = "Execute Python code in an isolated Docker container and return its stdout/stderr."
     parameters = {
         "type": "object",
         "properties": {
@@ -39,6 +46,7 @@ class PythonExecTool(BaseTool):
 
     def __init__(self, timeout: float = 15.0) -> None:
         self._default_timeout = timeout
+        self._client = docker.from_env()
 
     async def execute(self, **kwargs: str | float) -> ToolResult:
         code = kwargs.get("code", "")
@@ -49,39 +57,59 @@ class PythonExecTool(BaseTool):
         start = time.monotonic()
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "python3",
-                "-c",
-                f"import sys\nfrom pathlib import Path\n\n{code}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            try:
+                self._client.images.get(_IMAGE)
+            except ImageNotFound:
+                self._client.images.pull(_IMAGE)
+
+            container_name = f"hyrex-py-{uuid.uuid4().hex[:12]}"
+
+            container = self._client.containers.create(
+                _IMAGE,
+                ["python3", "-c", f"import sys\nfrom pathlib import Path\n\n{code}"],
+                name=container_name,
+                mem_limit=_CONTAINER_MEMORY_LIMIT,
+                cpu_quota=int(_CONTAINER_CPU_LIMIT * 100000),
+                network_disabled=True,
+                auto_remove=False,
+                read_only=True,
             )
 
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=cmd_timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return ToolResult(
-                    success=False,
-                    error=f"Execution timed out after {cmd_timeout}s",
-                    execution_time=time.monotonic() - start,
-                )
+            container.start()
+
+            exit_code = container.wait(timeout=cmd_timeout).get("StatusCode", -1)
+
+            stdout_raw = container.logs(stdout=True, stderr=False).decode(errors="replace")
+            stderr_raw = container.logs(stdout=False, stderr=True).decode(errors="replace")
+
+            container.remove(force=True)
 
             elapsed = time.monotonic() - start
-            out = stdout.decode(errors="replace") if stdout else ""
-            err = stderr.decode(errors="replace") if stderr else ""
 
-            if proc.returncode == 0:
-                return ToolResult(success=True, output=out, execution_time=elapsed)
+            if exit_code == 0:
+                return ToolResult(success=True, output=stdout_raw, execution_time=elapsed)
             else:
-                msg = f"Exit code {proc.returncode}"
-                if err:
-                    msg += f"\n{err}"
-                return ToolResult(success=False, output=out, error=msg, execution_time=elapsed)
+                msg = f"Exit code {exit_code}"
+                if stderr_raw:
+                    msg += f"\n{stderr_raw}"
+                return ToolResult(success=False, output=stdout_raw, error=msg, execution_time=elapsed)
 
+        except docker.errors.TimeoutError:
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
+            return ToolResult(
+                success=False,
+                error=f"Execution timed out after {cmd_timeout}s",
+                execution_time=time.monotonic() - start,
+            )
+        except DockerException as exc:
+            return ToolResult(
+                success=False,
+                error=f"Docker execution failed: {exc}",
+                execution_time=time.monotonic() - start,
+            )
         except Exception as exc:
             return ToolResult(
                 success=False,

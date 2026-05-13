@@ -110,6 +110,6 @@ class SwarmRegistry:
     def to_dict(self) -> dict[str, Any]:
         return {
             "size": self.size,
-            "root": self.get_root().to_dict() if self._nodes else None,
-            "nodes": {n.node_id: n.to_dict() for n in self._nodes.values()},
+            "root": self.get_root().model_dump() if self._nodes else None,
+            "nodes": {n.node_id: n.model_dump() for n in self._nodes.values()},
         }
