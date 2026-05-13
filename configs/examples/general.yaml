@@ -1,0 +1,41 @@
+name: "General Purpose Agency"
+model: "gpt-4o"
+budget_usd: 10.0
+
+agents:
+  ceo:
+    name: "CEO"
+    role: CEO
+    children: [planner, executor]
+
+  planner:
+    name: "Planner"
+    role: MANAGER
+    parent: ceo
+    children: [researcher, strategist]
+
+  executor:
+    name: "Executor"
+    role: MANAGER
+    parent: ceo
+    children: [builder, verifier]
+
+  researcher:
+    name: "Researcher"
+    role: WORKER
+    parent: planner
+
+  strategist:
+    name: "Strategist"
+    role: WORKER
+    parent: planner
+
+  builder:
+    name: "Builder"
+    role: WORKER
+    parent: executor
+
+  verifier:
+    name: "Verifier"
+    role: WORKER
+    parent: executor

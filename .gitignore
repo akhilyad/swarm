@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Memory / vector store
+memory/chroma/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ChromaDB
+chroma_data/

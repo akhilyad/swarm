@@ -1,0 +1,41 @@
+name: "Research Lab"
+model: "claude-sonnet-4-20250514"
+budget_usd: 25.0
+
+agents:
+  director:
+    name: "Research Director"
+    role: CEO
+    children: [analyst-lead, writer-lead]
+
+  analyst-lead:
+    name: "Analysis Dept"
+    role: MANAGER
+    parent: director
+    children: [data-scout, fact-checker]
+
+  writer-lead:
+    name: "Publishing Dept"
+    role: MANAGER
+    parent: director
+    children: [technical-writer, reviewer]
+
+  data-scout:
+    name: "Data Scout"
+    role: WORKER
+    parent: analyst-lead
+
+  fact-checker:
+    name: "Fact Checker"
+    role: WORKER
+    parent: analyst-lead
+
+  technical-writer:
+    name: "Technical Writer"
+    role: WORKER
+    parent: writer-lead
+
+  reviewer:
+    name: "Reviewer"
+    role: WORKER
+    parent: writer-lead

@@ -1,0 +1,53 @@
+name: "Software Dev Agency"
+model: "gpt-4o"
+budget_usd: 50.0
+
+agents:
+  ceo:
+    name: "CEO"
+    role: CEO
+    model: "gpt-4o"
+    children: [pm, lead-eng, lead-design]
+
+  pm:
+    name: "PM-Dept"
+    role: MANAGER
+    parent: ceo
+    children: [worker-1, worker-2]
+
+  lead-eng:
+    name: "Engineering"
+    role: MANAGER
+    parent: ceo
+    children: [worker-3, worker-4]
+
+  lead-design:
+    name: "Design"
+    role: MANAGER
+    parent: ceo
+    children: [worker-5]
+
+  worker-1:
+    name: "Researcher"
+    role: WORKER
+    parent: pm
+
+  worker-2:
+    name: "Writer"
+    role: WORKER
+    parent: pm
+
+  worker-3:
+    name: "Developer"
+    role: WORKER
+    parent: lead-eng
+
+  worker-4:
+    name: "QA-Engineer"
+    role: WORKER
+    parent: lead-eng
+
+  worker-5:
+    name: "Designer"
+    role: WORKER
+    parent: lead-design
