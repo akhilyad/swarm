@@ -1,4 +1,4 @@
-"""CLI entry point for the Swarm of Swarms platform.
+"""CLI entry point for the Hyrex platform.
 
 Usage:
     swarm run --config config.yaml --goal "Your goal here"
@@ -22,7 +22,7 @@ from .runtime.orchestrator import Orchestrator
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 def cli(verbose: bool) -> None:
-    """Swarm of Swarms - hierarchical AI agent workforce."""
+    """Hyrex - hierarchical AI agent workforce."""
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,

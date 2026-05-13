@@ -33,11 +33,13 @@ class Orchestrator:
         self,
         config: SwarmConfig,
         llm_func: Any | None = None,
+        tool_registry: Any | None = None,
     ) -> None:
         self.config = config
         self.bus = MessageBus()
         self.registry, self.handles = build_from_config(config)
         self.llm_func = llm_func
+        self.tool_registry = tool_registry
         self._agent_loops: dict[str, AgentLoop] = {}
         self._start_time: float | None = None
         self._final_result: str | None = None
@@ -47,7 +49,12 @@ class Orchestrator:
         self._start_time = time.monotonic()
 
         for node_id, handle in self.handles.items():
-            loop = AgentLoop(handle=handle, bus=self.bus, llm_func=self.llm_func)
+            loop = AgentLoop(
+                handle=handle,
+                bus=self.bus,
+                llm_func=self.llm_func,
+                tool_registry=self.tool_registry,
+            )
             self._agent_loops[node_id] = loop
             await loop.start()
 

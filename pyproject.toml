@@ -1,5 +1,5 @@
 [project]
-name = "swarm-of-swarms"
+name = "hyrex"
 version = "0.1.0"
 description = "Hierarchical AI agent workforce platform — CEO delegates to Managers who delegate to Workers"
 requires-python = ">=3.11"

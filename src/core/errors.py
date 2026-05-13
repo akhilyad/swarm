@@ -1,4 +1,4 @@
-"""Custom exceptions for the Swarm of Swarms platform."""
+"""Custom exceptions for the Hyrex platform."""
 
 
 class SwarmError(Exception):

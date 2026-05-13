@@ -5,13 +5,15 @@ Each agent runs its own AgentLoop that:
 2. Decomposes complex goals into sub-goals (for MANAGER/CEO)
 3. Delegates sub-goals to children (for MANAGER/CEO)
 4. Executes simple goals directly by calling the LLM (for WORKER)
-5. Synthesizes results and reports back up the hierarchy
+5. Supports tool calling: LLM can invoke tools, get results, and continue
+6. Synthesizes results and reports back up the hierarchy
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from ..communication.bus import MessageBus, Subscription
@@ -20,6 +22,46 @@ from ..core.node import NodeHandle
 from ..core.types import Goal, GoalStatus, Message, MessageType, Role
 
 logger = logging.getLogger(__name__)
+
+# Regex to match a tool call produced by the LLM.
+# Format:  TOOL_CALL: tool_name(param_name="value", param2=123)
+_TOOL_CALL_RE = re.compile(
+    r"TOOL_CALL:\s*(?P<name>\w+)\s*"
+    r"\((?P<args>.*)\)\s*$",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Parse a ``TOOL_CALL: name(key="val", ...)`` line from LLM output.
+
+    Returns ``(tool_name, {arg_name: arg_value})`` or ``None``.
+    """
+    m = _TOOL_CALL_RE.search(text)
+    if not m:
+        return None
+
+    name = m.group("name")
+    raw_args = m.group("args").strip()
+
+    args: dict[str, Any] = {}
+    if raw_args:
+        for pair in re.finditer(r'(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|\S+?)\s*(?:,|$)', raw_args):
+            key = pair.group(1)
+            val: Any = pair.group(2)
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            else:
+                try:
+                    val = int(val)
+                except ValueError:
+                    try:
+                        val = float(val)
+                    except ValueError:
+                        pass
+            args[key] = val
+
+    return name, args
 
 
 class AgentLoop:
@@ -30,10 +72,14 @@ class AgentLoop:
         handle: NodeHandle,
         bus: MessageBus,
         llm_func: Any | None = None,
+        tool_registry: Any | None = None,
+        max_tool_iterations: int = 10,
     ) -> None:
         self.handle = handle
         self.bus = bus
         self.llm_func = llm_func  # Async callable: (prompt, context) -> str
+        self.tool_registry = tool_registry
+        self.max_tool_iterations = max_tool_iterations
         self._running = False
         self._subscriptions: list[Subscription] = []
         self._active_goals: dict[str, Goal] = {}
@@ -118,11 +164,77 @@ class AgentLoop:
         """Execute a goal directly.
 
         WORKER agents execute goals by calling the LLM.
+        If tools are registered, the LLM can invoke tools iteratively —
+        the loop continues until the LLM produces a final text response
+        (no tool call) or the iteration limit is reached.
         Falls back to a simple result if no LLM client is configured.
         """
-        if self.llm_func:
-            return await self.llm_func(goal.description, {"role": self.handle.role.value})
-        return f"[{self.handle.name}] executed: {goal.description}"
+        if not self.llm_func:
+            return f"[{self.handle.name}] executed: {goal.description}"
+
+        prompt = self._build_tool_prompt(goal.description)
+        conversation = [prompt]
+
+        for iteration in range(self.max_tool_iterations):
+            response = await self.llm_func(
+                conversation[-1] if len(conversation) == 1
+                else f"{conversation[-1]}\n\n[CONTEXT]\n{goal.description}",
+                {"role": self.handle.role.value, "iteration": iteration},
+            )
+
+            parsed = _parse_tool_call(response)
+            if parsed is None:
+                return response
+
+            tool_name, tool_args = parsed
+            tool = self.tool_registry.get_tool(tool_name) if self.tool_registry else None
+            if tool is None:
+                return (
+                    f"Tool '{tool_name}' is not available. "
+                    f"Available tools: {self.tool_registry.list_capabilities() if self.tool_registry else 'none'}"
+                )
+
+            result = await tool.execute(**tool_args)
+            if result.success:
+                conversation.append(
+                    f"[Tool '{tool_name}' returned]:\n{result.output}"
+                )
+            else:
+                conversation.append(
+                    f"[Tool '{tool_name}' error]:\n{result.error}"
+                )
+
+        return (
+            f"[{self.handle.name}] max tool iterations ({self.max_tool_iterations}) "
+            f"reached. Last response: {response}"
+        )
+
+    def _build_tool_prompt(self, goal: str) -> str:
+        """Build the initial LLM prompt with tool descriptions injected."""
+        lines = [
+            f"You are {self.handle.name}, a {self.handle.role.value} agent.",
+            "",
+            f"Goal: {goal}",
+            "",
+        ]
+
+        if self.tool_registry and self.tool_registry.tool_count > 0:
+            lines.append("You have access to the following tools:")
+            lines.append("")
+            lines.append(self.tool_registry.list_capabilities())
+            lines.append("")
+            lines.append(
+                "To use a tool, respond with a TOOL_CALL line exactly like this:\n"
+                'TOOL_CALL: tool_name(param1="value1", param2="value2")\n\n'
+                "After the tool returns, you will see its result. "
+                "Continue calling tools or respond with your final answer.\n"
+                "When you are done, respond with your final answer without a TOOL_CALL line."
+            )
+        else:
+            lines.append("Respond with the result of your work.")
+            lines.append("")
+
+        return "\n".join(lines)
 
     async def _decompose_and_delegate(self, goal: Goal) -> str:
         """Decompose a goal into sub-goals and delegate to children.

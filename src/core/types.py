@@ -1,4 +1,4 @@
-"""Core data models for the Swarm of Swarms platform."""
+"""Core data models for the Hyrex platform."""
 
 from __future__ import annotations
 
