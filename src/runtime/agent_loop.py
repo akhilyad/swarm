@@ -22,6 +22,11 @@ from ..communication.message import create_goal_message, create_reply, create_re
 from ..core.node import NodeHandle
 from ..core.types import Goal, GoalStatus, Message, MessageType, Role
 
+try:
+    import nats as _nats
+except ImportError:
+    _nats = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,24 +53,48 @@ class AgentLoop:
         self.max_tool_iterations = max_tool_iterations
         self._state_dir = Path(state_dir)
         self._state_dir.mkdir(parents=True, exist_ok=True)
+        self._kv = None
         self._running = False
         self._subscriptions: list[Subscription] = []
         self._active_goals: dict[str, Goal] = {}
 
+    async def _ensure_kv(self) -> Any | None:
+        """Lazy-init the NATS KV store (or None if unavailable)."""
+        if self._kv is None:
+            self._kv = await self.bus.get_kv_store(bucket="agent_state")
+        return self._kv
+
     def _state_path(self, goal_id: str) -> Path:
-        """Path to the state file for a specific goal execution."""
+        """Path to the local state file for a specific goal execution."""
         return self._state_dir / f"{self.handle.node_id}_{goal_id}.json"
 
-    def _save_state(self, goal_id: str, data: dict) -> None:
-        """Persist conversation state so the agent can resume after a crash."""
+    async def _save_state(self, goal_id: str, data: dict) -> None:
+        """Persist conversation state — tries NATS KV first, falls back to file."""
+        kv = await self._ensure_kv()
+        if kv is not None:
+            try:
+                await kv.put(goal_id, json.dumps(data).encode())
+                return
+            except Exception as exc:
+                logger.warning("KV save failed for goal %s: %s", goal_id, exc)
+        # Fallback: file-based state
         try:
             path = self._state_path(goal_id)
             path.write_text(json.dumps(data), encoding="utf-8")
         except Exception as exc:
             logger.warning("Failed to save state for goal %s: %s", goal_id, exc)
 
-    def _load_state(self, goal_id: str) -> dict | None:
-        """Load previously-saved conversation state, if any."""
+    async def _load_state(self, goal_id: str) -> dict | None:
+        """Load previously-saved conversation state — tries NATS KV first, falls back to file."""
+        kv = await self._ensure_kv()
+        if kv is not None:
+            try:
+                entry = await kv.get(goal_id)
+                if entry is not None:
+                    return json.loads(entry.value)
+            except Exception as exc:
+                logger.warning("KV load failed for goal %s: %s", goal_id, exc)
+        # Fallback: file-based state
         path = self._state_path(goal_id)
         if not path.exists():
             return None
@@ -75,8 +104,15 @@ class AgentLoop:
             logger.warning("Failed to load state for goal %s: %s", goal_id, exc)
             return None
 
-    def _delete_state(self, goal_id: str) -> None:
-        """Remove state file after a goal completes successfully."""
+    async def _delete_state(self, goal_id: str) -> None:
+        """Remove persisted state after a goal completes."""
+        kv = await self._ensure_kv()
+        if kv is not None:
+            try:
+                await kv.delete(goal_id)
+            except Exception as exc:
+                logger.warning("KV delete failed for goal %s: %s", goal_id, exc)
+        # Also clean up any local fallback file
         try:
             self._state_path(goal_id).unlink(missing_ok=True)
         except Exception as exc:
@@ -325,7 +361,7 @@ class AgentLoop:
         )
 
         # Check for previous state (crash recovery)
-        saved_state = self._load_state(goal.goal_id)
+        saved_state = await self._load_state(goal.goal_id)
         if saved_state is not None:
             restored_conversation = saved_state.get("conversation", [])
             restored_iteration = saved_state.get("iteration", 0)
@@ -347,14 +383,14 @@ class AgentLoop:
             )
 
             # Save state after every LLM response (crash recovery)
-            self._save_state(goal.goal_id, {
+            await self._save_state(goal.goal_id, {
                 "conversation": conversation,
                 "iteration": iteration,
             })
 
             # No tool call -> final answer
             if not response.tool_calls:
-                self._delete_state(goal.goal_id)
+                await self._delete_state(goal.goal_id)
                 return response.content or ""
 
             # Execute each tool call the LLM made

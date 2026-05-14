@@ -1,26 +1,23 @@
 """Tool that executes a shell command via local subprocess.
 
-Replaces the Docker-based execution with a direct subprocess call.
-The MCP server (``src.tools.mcp_server``) wraps this same logic as a
-long-running service for distributed setups.
+No Docker dependency — runs directly on the host. For distributed
+setups, use the MCP client (``src.tools.mcp_client``) instead.
 """
 
 from __future__ import annotations
 
 import asyncio
 import subprocess
-import sys
-import time
 import tempfile
+import time
 
 from ..base import BaseTool, ToolResult
 
 
 class BashTool(BaseTool):
-    """Execute a shell command locally and return its output.
+    """Execute a shell command and return its output.
 
-    Security: commands run in an isolated temp directory with no special
-    permissions. Use the MCP server for remote/containerized execution.
+    Commands run in an isolated temp directory. No container overhead.
     """
 
     name = "bash"

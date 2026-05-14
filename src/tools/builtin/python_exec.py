@@ -1,8 +1,7 @@
 """Tool that executes Python code via local subprocess.
 
-Replaces the Docker-based execution with a direct subprocess call.
-The MCP server (``src.tools.mcp_server``) wraps this same logic as a
-long-running service for distributed setups.
+No Docker dependency — runs directly on the host. For distributed
+setups, use the MCP client (``src.tools.mcp_client``) instead.
 """
 
 from __future__ import annotations
@@ -16,10 +15,10 @@ from ..base import BaseTool, ToolResult
 
 
 class PythonExecTool(BaseTool):
-    """Execute a Python snippet locally and return its stdout/stderr.
+    """Execute a Python snippet and return its stdout/stderr.
 
-    Security: code runs in an isolated subprocess with no special
-    permissions. Use the MCP server for remote/containerized execution.
+    Code runs in an isolated subprocess with no special permissions.
+    No container overhead.
     """
 
     name = "python_exec"
