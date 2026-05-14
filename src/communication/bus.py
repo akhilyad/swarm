@@ -242,28 +242,32 @@ class MessageBus:
         payload = json.dumps(message.model_dump()).encode()
 
         if self._js:
-            for target in targets:
-                subject = f"{_STREAM_NAME}.{target}"
+            tasks = []
+
+            async def _publish_js(subj: str, log_err: bool) -> None:
                 try:
-                    await self._js.publish(subject, payload)
+                    await self._js.publish(subj, payload)
                 except Exception as exc:
-                    logger.error("JetStream publish to %s failed: %s", subject, exc)
-            # Also publish to type topic
-            type_subject = f"{_STREAM_NAME}.{type_topic}"
-            try:
-                await self._js.publish(type_subject, payload)
-            except Exception:
-                pass
-        elif self._nc:
+                    if log_err:
+                        logger.error("JetStream publish to %s failed: %s", subj, exc)
+
             for target in targets:
+                tasks.append(_publish_js(f"{_STREAM_NAME}.{target}", True))
+            tasks.append(_publish_js(f"{_STREAM_NAME}.{type_topic}", False))
+            await asyncio.gather(*tasks)
+        elif self._nc:
+            tasks = []
+
+            async def _publish_nc(subj: str) -> None:
                 try:
-                    await self._nc.publish(target, payload)
+                    await self._nc.publish(subj, payload)
                 except Exception:
                     pass
-            try:
-                await self._nc.publish(type_topic, payload)
-            except Exception:
-                pass
+
+            for target in targets:
+                tasks.append(_publish_nc(target))
+            tasks.append(_publish_nc(type_topic))
+            await asyncio.gather(*tasks)
 
         to_call: list[MessageHandler] = []
         seen: set[SubscriptionId] = set()
