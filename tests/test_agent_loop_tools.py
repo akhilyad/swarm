@@ -11,7 +11,7 @@ import pytest
 from src.communication.bus import MessageBus
 from src.communication.message import create_goal_message
 from src.core.node import NodeHandle
-from src.core.types import GoalStatus, Message, MessageType, Role, SwarmNode
+from src.core.types import MessageType, Role, SwarmNode
 from src.llm.client import LLMResponse, ToolCall
 from src.runtime.agent_loop import AgentLoop
 from src.tools.base import BaseTool, ToolRegistry, ToolResult

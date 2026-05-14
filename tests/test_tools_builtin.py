@@ -118,6 +118,14 @@ class TestBashTool:
         assert result.success is False
         assert "timed out" in result.error.lower()
 
+    async def test_command_injection_prevention(self) -> None:
+        tool = BashTool()
+        # If `--` is missing, `sh -c -e echo a` will throw an error or behave unexpectedly
+        # instead of correctly failing to find the `-e` command.
+        result = await tool.execute(command="-e echo a")
+        assert result.success is False
+        assert "-e" in result.error and "not found" in result.error
+
 
 class TestPythonExecTool:
     """Tests run locally (no Docker required)."""

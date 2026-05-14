@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.core.config import SwarmConfig, load_config
+from src.core.config import load_config
 from src.core.errors import ConfigError
 from src.core.types import Role
 
