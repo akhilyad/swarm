@@ -46,7 +46,6 @@ class LLMClient:
         )
         self.budget_usd = budget_usd
         self.total_cost = 0.0
-        self.request_count = 0
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def generate(
@@ -80,7 +79,6 @@ class LLMClient:
         system_prompt = self._build_system_prompt(context or {})
 
         async with self._semaphore:
-            self.request_count += 1
             response = await self._request_with_retry(
                 actual_model, system_prompt, prompt, max_tokens, temperature, tools
             )
@@ -193,11 +191,3 @@ class LLMClient:
                 self.total_cost,
                 self.budget_usd,
             )
-
-    @property
-    def cost_summary(self) -> str:
-        return f"Requests: {self.request_count}, Total cost: ${self.total_cost:.4f}"
-
-    def reset_costs(self) -> None:
-        self.total_cost = 0.0
-        self.request_count = 0
