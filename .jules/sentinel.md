@@ -1,0 +1,4 @@
+## 2024-05-14 - Fix Subprocess Timeout Leak (DoS Vulnerability)
+**Vulnerability:** The `BashTool` and `PythonExecTool` used `asyncio.wait_for` around `asyncio.to_thread(subprocess.run, ...)`. When a timeout occurred, `asyncio.wait_for` correctly raised a `TimeoutError`, but the underlying shell command or Python script continued executing in the background, consuming threads and potentially causing a Denial of Service (DoS) due to thread pool exhaustion and zombie processes.
+**Learning:** `asyncio.wait_for` on `asyncio.to_thread` only cancels the async wrapper, not the blocking operation inside the thread. Subprocess operations must manage their own timeouts.
+**Prevention:** Pass the `timeout` parameter directly into `subprocess.run` inside `asyncio.to_thread` and catch `subprocess.TimeoutExpired` instead.

@@ -158,3 +158,9 @@ class TestWebFetchTool:
         result = await tool.execute(url="")
         assert result.success is False
         assert "url is required" in result.error
+
+    async def test_timeout_kills_command(self) -> None:
+        tool = PythonExecTool(timeout=0.5)
+        result = await tool.execute(code="import time\ntime.sleep(10)")
+        assert result.success is False
+        assert "timed out" in result.error.lower()

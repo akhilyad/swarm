@@ -50,14 +50,12 @@ class BashTool(BaseTool):
 
         try:
             with tempfile.TemporaryDirectory(prefix="hyrex-bash-") as tmpdir:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        subprocess.run,
-                        ["sh", "-c", command],
-                        capture_output=True,
-                        text=True,
-                        cwd=tmpdir,
-                    ),
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ["sh", "-c", command],
+                    capture_output=True,
+                    text=True,
+                    cwd=tmpdir,
                     timeout=cmd_timeout,
                 )
 
@@ -75,7 +73,7 @@ class BashTool(BaseTool):
                     execution_time=elapsed,
                 )
 
-        except asyncio.TimeoutError:
+        except subprocess.TimeoutExpired:
             return ToolResult(
                 success=False,
                 error=f"Command timed out after {cmd_timeout}s",
