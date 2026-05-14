@@ -25,7 +25,7 @@ def _exec_bash(command: str, timeout: float) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="hyrex-bash-") as tmpdir:
         try:
             result = subprocess.run(
-                ["sh", "-c", command],
+                ["sh", "-c", "--", command],
                 capture_output=True,
                 text=True,
                 timeout=timeout,

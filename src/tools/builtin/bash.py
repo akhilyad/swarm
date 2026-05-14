@@ -52,7 +52,7 @@ class BashTool(BaseTool):
             with tempfile.TemporaryDirectory(prefix="hyrex-bash-") as tmpdir:
                 result = await asyncio.to_thread(
                     subprocess.run,
-                    ["sh", "-c", command],
+                    ["sh", "-c", "--", command],
                     capture_output=True,
                     text=True,
                     cwd=tmpdir,
