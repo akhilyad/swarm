@@ -1,4 +1,8 @@
-"""Tests for the async message bus."""
+"""Tests for the async message bus.
+
+All tests now run against the in-memory/local NATS fallback mode
+(SQLite dependency removed).
+"""
 
 import pytest
 
@@ -72,6 +76,13 @@ class TestMessageBus:
         await bus.publish(msg)
 
         assert len(received) == 1
+
+    async def test_get_active_goals_returns_pending_goals(self, bus: MessageBus) -> None:
+        msg = create_goal_message(sender="ceo", recipient="worker", goal_description="test goal")
+        await bus.publish(msg)
+        goals = bus.get_active_goals()
+        assert len(goals) == 1
+        assert goals[0].description == "test goal"
 
 
 class TestMessageFactory:

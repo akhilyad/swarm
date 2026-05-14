@@ -1,7 +1,6 @@
 """Tests for the built-in tools.
 
-Many operate on the real filesystem / Docker, so they live as
-integration-style tests rather than pure unit tests.
+All tools now execute locally (no Docker dependency).
 """
 
 from __future__ import annotations
@@ -18,12 +17,6 @@ from src.tools.builtin import (
     ReadFileTool,
     WebFetchTool,
     WriteFileTool,
-)
-
-
-_SKIP_DOCKER = pytest.mark.skipif(
-    os.environ.get("HYREX_SKIP_DOCKER_TESTS", "0") == "1",
-    reason="Docker-dependent tests skipped (HYREX_SKIP_DOCKER_TESTS=1)",
 )
 
 
@@ -94,31 +87,31 @@ class TestWriteFileTool:
         assert result.success is False
 
 
-class TestBashTool:
-    """Tests require Docker (alpine:latest image)."""
+_IS_WINDOWS = os.name == "nt"
 
-    @_SKIP_DOCKER
+
+@pytest.mark.skipif(_IS_WINDOWS, reason="BashTool requires a POSIX shell")
+class TestBashTool:
+    """Tests run locally (no Docker required)."""
+
     async def test_echo_command(self) -> None:
         tool = BashTool()
         result = await tool.execute(command='echo "hello from bash"')
         assert result.success is True
         assert "hello from bash" in result.output
 
-    @_SKIP_DOCKER
     async def test_failing_command(self) -> None:
         tool = BashTool()
         result = await tool.execute(command="exit 42")
         assert result.success is False
         assert "42" in result.error
 
-    @_SKIP_DOCKER
     async def test_empty_command(self) -> None:
         tool = BashTool()
         result = await tool.execute(command="")
         assert result.success is False
         assert "command is required" in result.error
 
-    @_SKIP_DOCKER
     async def test_timeout_kills_command(self) -> None:
         tool = BashTool(timeout=0.5)
         result = await tool.execute(command="sleep 10")
@@ -127,29 +120,25 @@ class TestBashTool:
 
 
 class TestPythonExecTool:
-    """Tests require Docker (python:3.11-alpine image)."""
+    """Tests run locally (no Docker required)."""
 
-    @_SKIP_DOCKER
     async def test_simple_code(self) -> None:
         tool = PythonExecTool()
         result = await tool.execute(code='print("hello from python")')
         assert result.success is True
         assert "hello from python" in result.output
 
-    @_SKIP_DOCKER
     async def test_code_with_result(self) -> None:
         tool = PythonExecTool()
         result = await tool.execute(code="print(sum(range(10)))")
         assert result.success is True
         assert "45" in result.output
 
-    @_SKIP_DOCKER
     async def test_error_code(self) -> None:
         tool = PythonExecTool()
         result = await tool.execute(code="raise ValueError('boom')")
         assert result.success is False
 
-    @_SKIP_DOCKER
     async def test_empty_code(self) -> None:
         tool = PythonExecTool()
         result = await tool.execute(code="")

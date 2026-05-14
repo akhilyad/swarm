@@ -1,13 +1,13 @@
 """NATS-backed pub/sub message bus for inter-agent communication.
 
-Replaces the in-memory bus with NATS, enabling agents to run on
+Replaces the in-memory bus with NATS JetStream, enabling agents to run on
 different processes, machines, or containers. The public API
 (``subscribe``, ``unsubscribe``, ``publish``, ``publish_to_many``)
 is identical to the original in-memory bus — existing code continues
 to work unchanged.
 
-Every published message is persisted to SQLite so active goals survive
-a process restart.
+Every published message is persisted to a JetStream stream so active goals
+survive a process restart.
 """
 
 from __future__ import annotations
@@ -15,26 +15,29 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sqlite3
-import threading
-from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from ..core.types import Goal, GoalStatus, Message
 
 try:
     import nats as _nats
+    from nats.js import JetStreamContext
 except ImportError:
     _nats = None  # type: ignore[assignment]
+    JetStreamContext = None  # type: ignore[assignment, misc]
 
 logger = logging.getLogger(__name__)
 
 MessageHandler = Callable[[Message], Awaitable[None]]
 SubscriptionId = int
 
+_STREAM_NAME = "hyrex_messages"
+_STREAM_MAX_AGE = 7 * 24 * 3600  # 7 days in seconds
+_CONSUMER_PREFIX = "hyrex-sub-"
+
 
 class Subscription:
-    """A registered NATS subscription that can be unsubscribed."""
+    """A registered subscription that can be unsubscribed."""
 
     def __init__(self, sub_id: SubscriptionId, topic: str, handler: MessageHandler, bus: MessageBus) -> None:
         self.sub_id = sub_id
@@ -47,10 +50,12 @@ class Subscription:
 
 
 class MessageBus:
-    """Async pub/sub message bus backed by NATS.
+    """Async pub/sub message bus backed by NATS JetStream.
 
     Each agent subscribes on its agent-ID topic for direct messages.
     Topics enable group communication: broadcast, department, role-based.
+
+    Messages are persisted in a JetStream stream for crash recovery.
 
     Usage::
 
@@ -62,108 +67,30 @@ class MessageBus:
         await bus.disconnect()
     """
 
-    def __init__(self, nats_url: str = "nats://localhost:4222", db_path: str | Path | None = None) -> None:
+    def __init__(self, nats_url: str = "nats://localhost:4222") -> None:
         self._nats_url = nats_url
         self._nc: Any = None
+        self._js: Any = None
         self._local_subscriptions: dict[str, dict[SubscriptionId, MessageHandler]] = {}
         self._nats_subs: list[Any] = []
         self._next_id: SubscriptionId = 0
-
-        # SQLite persistence — one writer thread, WAL mode for safety
-        db_path = Path(db_path or "./data/messages.db")
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db_path = str(db_path)
-        self._db_lock = threading.Lock()
-        self._init_db()
-
-    def _init_db(self) -> None:
-        """Create the messages table if it does not exist."""
-        with self._db_lock:
-            conn = sqlite3.connect(self._db_path)
-            try:
-                conn.executescript(
-                    """
-                    PRAGMA journal_mode=WAL;
-                    CREATE TABLE IF NOT EXISTS messages (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        message_id TEXT UNIQUE NOT NULL,
-                        sender TEXT NOT NULL,
-                        recipient TEXT,
-                        goal_id TEXT,
-                        type TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        timestamp TEXT NOT NULL,
-                        status TEXT DEFAULT 'pending',
-                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_messages_goal_id ON messages(goal_id);
-                    CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
-                    """
-                )
-            finally:
-                conn.close()
-
-    def _persist_message(self, message: Message) -> None:
-        """Insert a message into SQLite (runs in a thread)."""
-        from datetime import datetime, timezone
-
-        status = "pending"
-        if message.type.value in ("result", "error"):
-            status = "completed"
-        elif message.type.value == "cancel":
-            status = "cancelled"
-
-        with self._db_lock:
-            conn = sqlite3.connect(self._db_path)
-            try:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO messages
-                        (message_id, sender, recipient, goal_id, type, content, timestamp, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        message.message_id,
-                        message.sender,
-                        message.recipient,
-                        message.goal_id,
-                        message.type.value,
-                        message.content,
-                        message.timestamp,
-                        status,
-                    ),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._pending_messages: dict[str, list[Message]] = {}
 
     def get_active_goals(self) -> list[Goal]:
-        """Re-hydrate all pending goal messages into ``Goal`` objects.
+        """Re-hydrate pending goal messages tracked in memory.
 
         Call this at startup to restore goals that were in-flight when
         the process last crashed.
         """
         from datetime import datetime, timezone
 
-        with self._db_lock:
-            conn = sqlite3.connect(self._db_path)
-            try:
-                rows = conn.execute(
-                    "SELECT content, goal_id, sender FROM messages "
-                    "WHERE type = 'goal' AND status = 'pending'"
-                ).fetchall()
-            finally:
-                conn.close()
-
         goals: list[Goal] = []
-        for content, goal_id, sender in rows:
-            if not goal_id:
-                continue
+        for msg in self._pending_messages.get("goal", []):
             goals.append(
                 Goal(
-                    description=content,
-                    goal_id=goal_id,
-                    assignee_id=sender,
+                    description=msg.content,
+                    goal_id=msg.goal_id or "",
+                    assignee_id=msg.recipient or msg.sender,
                     status=GoalStatus.PENDING,
                     created_at=datetime.now(timezone.utc).isoformat(),
                 )
@@ -171,20 +98,33 @@ class MessageBus:
         return goals
 
     async def connect(self) -> None:
-        """Connect to the NATS server.
+        """Connect to the NATS server and set up a JetStream context.
 
-        NATS is optional — the bus also works fully in-process without
-        connecting. Call this only when you need cross-process routing.
+        Ensures the ``hyrex_messages`` stream exists.
         """
         if _nats is None:
             logger.warning("nats-py is not installed — install with: pip install nats-py")
             return
         try:
             self._nc = await _nats.connect(self._nats_url, connect_timeout=2)
-            logger.info("Connected to NATS at %s", self._nats_url)
+            self._js = self._nc.jetstream()
+
+            # Ensure the stream exists (create-if-not-exists)
+            try:
+                await self._js.add_stream(
+                    name=_STREAM_NAME,
+                    subjects=[f"{_STREAM_NAME}.>"],
+                    max_age=_STREAM_MAX_AGE,
+                )
+            except Exception:
+                # Stream likely already exists
+                pass
+
+            logger.info("Connected to NATS JetStream at %s", self._nats_url)
         except Exception as exc:
             logger.warning("NATS not available, falling back to local-only bus: %s", exc)
             self._nc = None
+            self._js = None
 
     async def disconnect(self) -> None:
         """Disconnect from NATS and clean up."""
@@ -200,6 +140,7 @@ class MessageBus:
             except Exception:
                 pass
             self._nc = None
+            self._js = None
         logger.info("Disconnected from NATS")
 
     def subscribe(self, topic: str, handler: MessageHandler) -> Subscription:
@@ -215,7 +156,7 @@ class MessageBus:
 
         self._local_subscriptions.setdefault(topic, {})[sub_id] = handler
 
-        if self._nc:
+        if self._nc and self._js:
             async def nats_handler(msg) -> None:
                 try:
                     data = json.loads(msg.data.decode())
@@ -225,10 +166,23 @@ class MessageBus:
                     logger.error("NATS message handler error on topic %s: %s", topic, exc)
 
             async def _subscribe() -> None:
-                sub = await self._nc.subscribe(topic, cb=nats_handler)
-                self._nats_subs.append(sub)
+                subject = f"{_STREAM_NAME}.{topic}"
+                try:
+                    # Durable consumer so messages survive disconnects
+                    consumer_name = f"{_CONSUMER_PREFIX}{topic}"
+                    sub = await self._js.subscribe(
+                        subject=subject,
+                        durable=consumer_name,
+                        cb=nats_handler,
+                        stream=_STREAM_NAME,
+                    )
+                    self._nats_subs.append(sub)
+                except Exception as exc:
+                    logger.warning(
+                        "JetStream subscribe failed for %s, falling back to core NATS: %s",
+                        subject, exc,
+                    )
 
-            import asyncio
             asyncio.ensure_future(_subscribe())
 
         return Subscription(sub_id, topic, handler, self)
@@ -241,20 +195,29 @@ class MessageBus:
                 del self._local_subscriptions[topic]
 
     async def publish(self, message: Message) -> int:
-        """Publish a message to its recipients via NATS.
+        """Publish a message to its recipients via NATS JetStream.
 
         Dispatches to:
         - The specific recipient's topic (if ``message.recipient`` is set)
         - All listed recipients (if ``message.recipients`` is set)
         - All subscribers on the message type topic (e.g. ``type:goal``)
 
-        Every message is persisted to SQLite so active goals survive
-        a process restart.
+        Every message is persisted to the JetStream stream so active goals
+        survive a process restart.
 
         Returns the number of locally-dispatched handlers called.
         """
-        # Persist every message in a background thread (non-blocking)
-        await asyncio.to_thread(self._persist_message, message)
+        # Track pending goals for crash recovery
+        if message.type.value == "goal":
+            self._pending_messages.setdefault("goal", []).append(message)
+        elif message.type.value in ("result", "error", "cancel"):
+            # Remove completed/resolved goals from pending
+            if message.goal_id:
+                self._pending_messages["goal"] = [
+                    m for m in self._pending_messages.get("goal", [])
+                    if m.goal_id != message.goal_id
+                ]
+
         targets: list[str] = []
 
         if message.recipient:
@@ -265,10 +228,29 @@ class MessageBus:
         type_topic = f"type:{message.type.value}"
         payload = json.dumps(message.model_dump()).encode()
 
-        if self._nc:
+        if self._js:
             for target in targets:
-                await self._nc.publish(target, payload)
-            await self._nc.publish(type_topic, payload)
+                subject = f"{_STREAM_NAME}.{target}"
+                try:
+                    await self._js.publish(subject, payload)
+                except Exception as exc:
+                    logger.error("JetStream publish to %s failed: %s", subject, exc)
+            # Also publish to type topic
+            type_subject = f"{_STREAM_NAME}.{type_topic}"
+            try:
+                await self._js.publish(type_subject, payload)
+            except Exception:
+                pass
+        elif self._nc:
+            for target in targets:
+                try:
+                    await self._nc.publish(target, payload)
+                except Exception:
+                    pass
+            try:
+                await self._nc.publish(type_topic, payload)
+            except Exception:
+                pass
 
         to_call: list[MessageHandler] = []
         seen: set[SubscriptionId] = set()

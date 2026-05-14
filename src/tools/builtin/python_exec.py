@@ -1,36 +1,29 @@
-"""Tool that executes Python code inside an isolated Docker container.
+"""Tool that executes Python code via local subprocess.
 
-Every invocation spins up an ephemeral container running the code snippet.
-No host access, no network, destroyed immediately after execution.
+Replaces the Docker-based execution with a direct subprocess call.
+The MCP server (``src.tools.mcp_server``) wraps this same logic as a
+long-running service for distributed setups.
 """
 
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import time
-import uuid
-
-import docker
-from docker.errors import DockerException, ImageNotFound
 
 from ..base import BaseTool, ToolResult
-from ._workspace import _WORKSPACE_DIR
-
-
-_IMAGE = "python:3.11-alpine"
-_CONTAINER_MEMORY_LIMIT = "256m"
-_CONTAINER_CPU_LIMIT = 0.5
 
 
 class PythonExecTool(BaseTool):
-    """Execute a Python snippet inside an ephemeral Docker container.
+    """Execute a Python snippet locally and return its stdout/stderr.
 
-    Each call creates a fresh Python container, runs the code, captures
-    output, and destroys the container. No network, no host mounts.
+    Security: code runs in an isolated subprocess with no special
+    permissions. Use the MCP server for remote/containerized execution.
     """
 
     name = "python_exec"
-    description = "Execute Python code in an isolated Docker container and return its stdout/stderr."
+    description = "Execute Python code and return its stdout/stderr."
     parameters = {
         "type": "object",
         "properties": {
@@ -48,7 +41,6 @@ class PythonExecTool(BaseTool):
 
     def __init__(self, timeout: float = 15.0) -> None:
         self._default_timeout = timeout
-        self._client = docker.from_env()
 
     async def execute(self, **kwargs: str | float) -> ToolResult:
         code = kwargs.get("code", "")
@@ -59,61 +51,34 @@ class PythonExecTool(BaseTool):
         start = time.monotonic()
 
         try:
-            try:
-                self._client.images.get(_IMAGE)
-            except ImageNotFound:
-                self._client.images.pull(_IMAGE)
-
-            container_name = f"hyrex-py-{uuid.uuid4().hex[:12]}"
-
-            container = self._client.containers.create(
-                _IMAGE,
-                ["python3", "-c", f"import sys\nfrom pathlib import Path\n\n{code}"],
-                name=container_name,
-                mem_limit=_CONTAINER_MEMORY_LIMIT,
-                cpu_quota=int(_CONTAINER_CPU_LIMIT * 100000),
-                network_disabled=True,
-                auto_remove=False,
-                read_only=True,
-                volumes={_WORKSPACE_DIR: {"bind": "/workspace", "mode": "rw"}},
-                working_dir="/workspace",
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    subprocess.run,
+                    [sys.executable, "-c", code],
+                    capture_output=True,
+                    text=True,
+                ),
+                timeout=cmd_timeout,
             )
 
-            container.start()
-
-            # Run the blocking container.wait() in a thread so the event loop stays responsive
-            response = await asyncio.to_thread(container.wait, timeout=cmd_timeout)
-            exit_code = response.get("StatusCode", -1)
-
-            stdout_raw = container.logs(stdout=True, stderr=False).decode(errors="replace")
-            stderr_raw = container.logs(stdout=False, stderr=True).decode(errors="replace")
-
-            container.remove(force=True)
-
             elapsed = time.monotonic() - start
-
-            if exit_code == 0:
-                return ToolResult(success=True, output=stdout_raw, execution_time=elapsed)
+            if result.returncode == 0:
+                return ToolResult(success=True, output=result.stdout, execution_time=elapsed)
             else:
-                msg = f"Exit code {exit_code}"
-                if stderr_raw:
-                    msg += f"\n{stderr_raw}"
-                return ToolResult(success=False, output=stdout_raw, error=msg, execution_time=elapsed)
+                msg = f"Exit code {result.returncode}"
+                if result.stderr:
+                    msg += f"\n{result.stderr}"
+                return ToolResult(
+                    success=False,
+                    output=result.stdout,
+                    error=msg,
+                    execution_time=elapsed,
+                )
 
-        except docker.errors.TimeoutError:
-            try:
-                container.remove(force=True)
-            except Exception:
-                pass
+        except asyncio.TimeoutError:
             return ToolResult(
                 success=False,
                 error=f"Execution timed out after {cmd_timeout}s",
-                execution_time=time.monotonic() - start,
-            )
-        except DockerException as exc:
-            return ToolResult(
-                success=False,
-                error=f"Docker execution failed: {exc}",
                 execution_time=time.monotonic() - start,
             )
         except Exception as exc:

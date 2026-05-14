@@ -1,13 +1,15 @@
 """ChromaDB-backed memory store implementation.
 
-Zero-infrastructure vector store. Data persists to disk in the
-configured directory (default: ./memory/chroma).
+Supports both local (PersistentClient) and centralized (HttpClient)
+deployment. Defaults to HttpClient pointed at ``CHROMA_HOST`` /
+``CHROMA_PORT`` env vars for distributed setups.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -20,11 +22,27 @@ logger = logging.getLogger(__name__)
 
 
 class ChromaMemoryStore(MemoryStore):
-    """Memory store backed by ChromaDB (local, persistent)."""
+    """Memory store backed by ChromaDB — centralized or local."""
 
-    def __init__(self, persist_directory: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        persist_directory: str | Path | None = None,
+    ) -> None:
+        """Initialize the ChromaDB memory store.
+
+        Args:
+            host: ChromaDB server host (defaults to ``CHROMA_HOST`` env var,
+                  or ``None`` for local ``PersistentClient``).
+            port: ChromaDB server port (defaults to ``CHROMA_PORT`` env var,
+                  or ``None`` for local ``PersistentClient``).
+            persist_directory: Local persistence directory (only used when
+                  host is ``None``). Defaults to ``./memory/chroma``.
+        """
+        self._host = host or os.environ.get("CHROMA_HOST")
+        self._port = port or int(os.environ["CHROMA_PORT"]) if "CHROMA_PORT" in os.environ else None
         self.persist_directory = Path(persist_directory or "./memory/chroma")
-        self.persist_directory.mkdir(parents=True, exist_ok=True)
         self._client = None
         self._collection = None
         self._initialized = False
@@ -37,9 +55,23 @@ class ChromaMemoryStore(MemoryStore):
         try:
             import chromadb
 
-            self._client = chromadb.PersistentClient(
-                path=str(self.persist_directory)
-            )
+            if self._host:
+                # Centralized mode — connect to a remote ChromaDB server
+                self._client = chromadb.HttpClient(
+                    host=self._host,
+                    port=self._port or 8000,
+                )
+                logger.info(
+                    "ChromaMemoryStore connected to remote ChromaDB at %s:%s",
+                    self._host, self._port or 8000,
+                )
+            else:
+                # Local mode — persist to disk
+                self.persist_directory.mkdir(parents=True, exist_ok=True)
+                self._client = chromadb.PersistentClient(
+                    path=str(self.persist_directory),
+                )
+
             self._collection = self._client.get_or_create_collection(
                 name="swarm_memories",
                 metadata={"hnsw:space": "cosine"},

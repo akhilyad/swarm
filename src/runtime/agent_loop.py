@@ -12,7 +12,9 @@ Each agent runs its own AgentLoop that:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from ..communication.bus import MessageBus, Subscription
@@ -37,15 +39,48 @@ class AgentLoop:
         llm_func: Any | None = None,
         tool_registry: Any | None = None,
         max_tool_iterations: int = 10,
+        state_dir: str | Path = "./data/agent_states",
     ) -> None:
         self.handle = handle
         self.bus = bus
         self.llm_func = llm_func  # Async callable: (prompt, context) -> str
         self.tool_registry = tool_registry
         self.max_tool_iterations = max_tool_iterations
+        self._state_dir = Path(state_dir)
+        self._state_dir.mkdir(parents=True, exist_ok=True)
         self._running = False
         self._subscriptions: list[Subscription] = []
         self._active_goals: dict[str, Goal] = {}
+
+    def _state_path(self, goal_id: str) -> Path:
+        """Path to the state file for a specific goal execution."""
+        return self._state_dir / f"{self.handle.node_id}_{goal_id}.json"
+
+    def _save_state(self, goal_id: str, data: dict) -> None:
+        """Persist conversation state so the agent can resume after a crash."""
+        try:
+            path = self._state_path(goal_id)
+            path.write_text(json.dumps(data), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to save state for goal %s: %s", goal_id, exc)
+
+    def _load_state(self, goal_id: str) -> dict | None:
+        """Load previously-saved conversation state, if any."""
+        path = self._state_path(goal_id)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to load state for goal %s: %s", goal_id, exc)
+            return None
+
+    def _delete_state(self, goal_id: str) -> None:
+        """Remove state file after a goal completes successfully."""
+        try:
+            self._state_path(goal_id).unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("Failed to delete state for goal %s: %s", goal_id, exc)
 
     async def start(self) -> None:
         """Start listening for messages on the agent's inbox topic."""
@@ -289,7 +324,21 @@ class AgentLoop:
             else None
         )
 
-        for iteration in range(self.max_tool_iterations):
+        # Check for previous state (crash recovery)
+        saved_state = self._load_state(goal.goal_id)
+        if saved_state is not None:
+            restored_conversation = saved_state.get("conversation", [])
+            restored_iteration = saved_state.get("iteration", 0)
+            if restored_conversation and restored_iteration > 0:
+                conversation = restored_conversation
+                logger.info(
+                    "Agent %s recovered state for goal %s at iteration %d",
+                    self.handle.name, goal.goal_id, restored_iteration,
+                )
+
+        start_iter = saved_state.get("iteration", 0) + 1 if saved_state else 0
+
+        for iteration in range(start_iter, self.max_tool_iterations):
             response = await self.llm_func(
                 conversation[-1] if len(conversation) == 1
                 else f"{conversation[-1]}\n\n[CONTEXT]\n{goal.description}",
@@ -297,8 +346,15 @@ class AgentLoop:
                 tools=openai_tools,
             )
 
+            # Save state after every LLM response (crash recovery)
+            self._save_state(goal.goal_id, {
+                "conversation": conversation,
+                "iteration": iteration,
+            })
+
             # No tool call -> final answer
             if not response.tool_calls:
+                self._delete_state(goal.goal_id)
                 return response.content or ""
 
             # Execute each tool call the LLM made

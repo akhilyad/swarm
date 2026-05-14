@@ -1,38 +1,30 @@
-"""Tool that executes a shell command inside an isolated Docker container.
+"""Tool that executes a shell command via local subprocess.
 
-Every command gets its own ephemeral container — no host filesystem
-access, no network, destroyed immediately after execution.
+Replaces the Docker-based execution with a direct subprocess call.
+The MCP server (``src.tools.mcp_server``) wraps this same logic as a
+long-running service for distributed setups.
 """
 
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import time
-import uuid
-
-import docker
-from docker.errors import DockerException, ImageNotFound
+import tempfile
 
 from ..base import BaseTool, ToolResult
-from ._workspace import _WORKSPACE_DIR
-
-
-# Lightweight base image with common shell utilities
-_IMAGE = "alpine:latest"
-_CONTAINER_MEMORY_LIMIT = "256m"
-_CONTAINER_CPU_LIMIT = 0.5
 
 
 class BashTool(BaseTool):
-    """Execute a shell command inside an ephemeral Docker container.
+    """Execute a shell command locally and return its output.
 
-    Each invocation creates a fresh container, runs the command inside it,
-    captures stdout/stderr, and destroys the container. The container has
-    no network access and no host-mounted volumes.
+    Security: commands run in an isolated temp directory with no special
+    permissions. Use the MCP server for remote/containerized execution.
     """
 
     name = "bash"
-    description = "Execute a shell command in an isolated Docker container and return its output."
+    description = "Execute a shell command and return its output."
     parameters = {
         "type": "object",
         "properties": {
@@ -50,7 +42,6 @@ class BashTool(BaseTool):
 
     def __init__(self, timeout: float = 30.0) -> None:
         self._default_timeout = timeout
-        self._client = docker.from_env()
 
     async def execute(self, **kwargs: str | float) -> ToolResult:
         command = kwargs.get("command", "")
@@ -61,52 +52,42 @@ class BashTool(BaseTool):
         start = time.monotonic()
 
         try:
-            # Ensure the image is available
-            try:
-                self._client.images.get(_IMAGE)
-            except ImageNotFound:
-                self._client.images.pull(_IMAGE)
-
-            container_name = f"hyrex-bash-{uuid.uuid4().hex[:12]}"
-
-            container = self._client.containers.create(
-                _IMAGE,
-                ["sh", "-c", str(command)],
-                name=container_name,
-                mem_limit=_CONTAINER_MEMORY_LIMIT,
-                cpu_quota=int(_CONTAINER_CPU_LIMIT * 100000),
-                network_disabled=True,          # Block all network access
-                auto_remove=False,
-                read_only=True,                  # Read-only filesystem
-                volumes={_WORKSPACE_DIR: {"bind": "/workspace", "mode": "rw"}},
-                working_dir="/workspace",
-            )
-
-            container.start()
-
-            # Run the blocking container.wait() in a thread so the event loop stays responsive
-            response = await asyncio.to_thread(container.wait, timeout=cmd_timeout)
-            exit_code = response.get("StatusCode", -1)
-
-            stdout_raw = container.logs(stdout=True, stderr=False).decode(errors="replace")
-            stderr_raw = container.logs(stdout=False, stderr=True).decode(errors="replace")
-
-            container.remove(force=True)
+            with tempfile.TemporaryDirectory(prefix="hyrex-bash-") as tmpdir:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        subprocess.run,
+                        ["sh", "-c", command],
+                        capture_output=True,
+                        text=True,
+                        cwd=tmpdir,
+                    ),
+                    timeout=cmd_timeout,
+                )
 
             elapsed = time.monotonic() - start
-
-            if exit_code == 0:
-                return ToolResult(success=True, output=stdout_raw, execution_time=elapsed)
+            if result.returncode == 0:
+                return ToolResult(success=True, output=result.stdout, execution_time=elapsed)
             else:
-                msg = f"Exit code {exit_code}"
-                if stderr_raw:
-                    msg += f"\n{stderr_raw}"
-                return ToolResult(success=False, output=stdout_raw, error=msg, execution_time=elapsed)
+                msg = f"Exit code {result.returncode}"
+                if result.stderr:
+                    msg += f"\n{result.stderr}"
+                return ToolResult(
+                    success=False,
+                    output=result.stdout,
+                    error=msg,
+                    execution_time=elapsed,
+                )
 
-        except docker.errors.DockerException as exc:
+        except asyncio.TimeoutError:
             return ToolResult(
                 success=False,
-                error=f"Docker execution failed: {exc}",
+                error=f"Command timed out after {cmd_timeout}s",
+                execution_time=time.monotonic() - start,
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                success=False,
+                error="sh not found — this tool requires a POSIX shell",
                 execution_time=time.monotonic() - start,
             )
         except Exception as exc:
