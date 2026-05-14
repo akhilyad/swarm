@@ -5,7 +5,7 @@ import pytest
 from src.communication.bus import MessageBus
 from src.communication.message import create_goal_message
 from src.core.node import NodeHandle
-from src.core.types import Goal, MessageType, Role, SwarmNode
+from src.core.types import MessageType, Role, SwarmNode
 from src.runtime.agent_loop import AgentLoop
 
 
@@ -102,7 +102,6 @@ class TestAgentLoop:
 
         await loop.start()
 
-        from src.communication.message import create_reply
         from src.core.types import Message
 
         status_msg = Message(
