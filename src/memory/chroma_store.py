@@ -111,17 +111,20 @@ class ChromaMemoryStore(MemoryStore):
         """Store multiple entries at once."""
         await self._ensure_initialized()
 
-        ids = [e.entry_id for e in entries]
-        documents = [e.content for e in entries]
-        metadatas = [
-            {
-                "agent_id": e.agent_id,
-                "entry_type": e.entry_type,
-                "timestamp": e.timestamp,
-                **(e.metadata or {}),
-            }
-            for e in entries
-        ]
+        ids = []
+        documents = []
+        metadatas = []
+        for e in entries:
+            ids.append(e.entry_id)
+            documents.append(e.content)
+            metadatas.append(
+                {
+                    "agent_id": e.agent_id,
+                    "entry_type": e.entry_type,
+                    "timestamp": e.timestamp,
+                    **(e.metadata or {}),
+                }
+            )
 
         try:
             await asyncio.to_thread(
