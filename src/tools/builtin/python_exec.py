@@ -50,13 +50,11 @@ class PythonExecTool(BaseTool):
         start = time.monotonic()
 
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    subprocess.run,
-                    [sys.executable, "-c", code],
-                    capture_output=True,
-                    text=True,
-                ),
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, "-c", code],
+                capture_output=True,
+                text=True,
                 timeout=cmd_timeout,
             )
 
@@ -74,7 +72,7 @@ class PythonExecTool(BaseTool):
                     execution_time=elapsed,
                 )
 
-        except asyncio.TimeoutError:
+        except subprocess.TimeoutExpired:
             return ToolResult(
                 success=False,
                 error=f"Execution timed out after {cmd_timeout}s",
