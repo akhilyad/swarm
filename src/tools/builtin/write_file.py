@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -45,8 +46,12 @@ class WriteFileTool(BaseTool):
 
         try:
             path = self._resolve(raw)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+
+            def _write():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            await asyncio.to_thread(_write)
             return ToolResult(
                 success=True,
                 output=f"Wrote {len(content)} bytes to {path}",
