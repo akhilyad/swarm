@@ -80,7 +80,7 @@ class AgentLoop:
         # Fallback: file-based state
         try:
             path = self._state_path(goal_id)
-            path.write_text(json.dumps(data), encoding="utf-8")
+            await asyncio.to_thread(path.write_text, json.dumps(data), encoding="utf-8")
         except Exception as exc:
             logger.warning("Failed to save state for goal %s: %s", goal_id, exc)
 
@@ -96,10 +96,11 @@ class AgentLoop:
                 logger.warning("KV load failed for goal %s: %s", goal_id, exc)
         # Fallback: file-based state
         path = self._state_path(goal_id)
-        if not path.exists():
+        if not await asyncio.to_thread(path.exists):
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            content = await asyncio.to_thread(path.read_text, encoding="utf-8")
+            return json.loads(content)
         except Exception as exc:
             logger.warning("Failed to load state for goal %s: %s", goal_id, exc)
             return None
@@ -114,7 +115,8 @@ class AgentLoop:
                 logger.warning("KV delete failed for goal %s: %s", goal_id, exc)
         # Also clean up any local fallback file
         try:
-            self._state_path(goal_id).unlink(missing_ok=True)
+            path = self._state_path(goal_id)
+            await asyncio.to_thread(path.unlink, missing_ok=True)
         except Exception as exc:
             logger.warning("Failed to delete state for goal %s: %s", goal_id, exc)
 
