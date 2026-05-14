@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -40,13 +41,13 @@ class ReadFileTool(BaseTool):
 
         try:
             path = self._resolve(raw)
-            if not path.exists():
+            if not await asyncio.to_thread(path.exists):
                 return ToolResult(
                     success=False,
                     error=f"File not found: {path}",
                     execution_time=time.monotonic() - start,
                 )
-            content = path.read_text(encoding="utf-8")
+            content = await asyncio.to_thread(path.read_text, encoding="utf-8")
             return ToolResult(
                 success=True,
                 output=content,
