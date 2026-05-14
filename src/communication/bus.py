@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 MessageHandler = Callable[[Message], Awaitable[None]]
 SubscriptionId = int
 
-_STREAM_NAME = "hyrex_messages"
+_STREAM_NAME = "swarm_messages"
 _STREAM_MAX_AGE = 7 * 24 * 3600  # 7 days in seconds
-_CONSUMER_PREFIX = "hyrex-sub-"
+_CONSUMER_PREFIX = "swarm-sub-"
 
 
 class Subscription:
@@ -97,10 +97,23 @@ class MessageBus:
             )
         return goals
 
+    async def get_kv_store(self, bucket: str = "agent_state") -> Any | None:
+        """Get (or create) a JetStream KV bucket for state persistence.
+
+        Returns ``None`` when NATS is not connected — callers should
+        fall back to local file storage in that case.
+        """
+        if not self._js:
+            return None
+        try:
+            return await self._js.create_key_value(bucket=bucket)
+        except Exception:
+            return None
+
     async def connect(self) -> None:
         """Connect to the NATS server and set up a JetStream context.
 
-        Ensures the ``hyrex_messages`` stream exists.
+        Ensures the ``swarm_messages`` stream exists.
         """
         if _nats is None:
             logger.warning("nats-py is not installed — install with: pip install nats-py")
