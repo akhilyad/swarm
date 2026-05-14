@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from ..core.config import SwarmConfig
 from ..core.node import NodeHandle
-from ..core.types import SwarmNode
 from .registry import SwarmRegistry
 
 

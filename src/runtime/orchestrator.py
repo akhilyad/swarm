@@ -12,14 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from pathlib import Path
 from typing import Any
 
 from ..communication.bus import MessageBus
 from ..communication.message import create_goal_message
-from ..core.config import SwarmConfig, load_config
-from ..core.errors import SwarmError
-from ..core.types import Goal, GoalStatus, MessageType
+from ..core.config import SwarmConfig
+from ..core.types import Goal, MessageType
 from ..swarm.factory import build_from_config
 from .agent_loop import AgentLoop
 
