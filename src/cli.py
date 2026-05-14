@@ -77,9 +77,9 @@ def simulate(config: str, goal: str) -> None:
         click.echo(f"Running simulated goal on '{cfg.name}'...")
         click.echo(orchestrator.status_summary)
         result = await orchestrator.run_goal(goal, timeout=30)
-        click.echo(f"\n=== RESULT ===")
+        click.echo("\n=== RESULT ===")
         click.echo(result)
-        click.echo(f"\n=== STATUS ===")
+        click.echo("\n=== STATUS ===")
         click.echo(orchestrator.status_summary)
 
     asyncio.run(_run())

@@ -9,10 +9,9 @@ Provides common interaction patterns:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from ..core.errors import CommunicationError
-from ..core.types import Message, MessageType
+from ..core.types import Message
 from .bus import MessageBus
 
 

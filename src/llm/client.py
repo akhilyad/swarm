@@ -9,14 +9,14 @@ import os
 from collections import namedtuple
 from typing import Any
 
-# Structured response when the LLM calls a tool via native function-calling.
-ToolCall = namedtuple("ToolCall", ["name", "arguments"])
-LLMResponse = namedtuple("LLMResponse", ["content", "tool_calls"])
-
 import tenacity
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..core.errors import LLMError
+
+# Structured response when the LLM calls a tool via native function-calling.
+ToolCall = namedtuple("ToolCall", ["name", "arguments"])
+LLMResponse = namedtuple("LLMResponse", ["content", "tool_calls"])
 
 logger = logging.getLogger(__name__)
 

@@ -10,9 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import uuid
 from pathlib import Path
-from typing import Any
 
 from ..core.errors import MemoryError
 from ..core.types import MemoryEntry
@@ -145,7 +143,8 @@ class ChromaMemoryStore(MemoryStore):
         await self._ensure_initialized()
 
         try:
-            results = self._collection.query(
+            results = await asyncio.to_thread(
+                self._collection.query,
                 query_texts=[query],
                 n_results=n_results,
                 where={"agent_id": agent_id},
@@ -178,7 +177,8 @@ class ChromaMemoryStore(MemoryStore):
         await self._ensure_initialized()
 
         try:
-            results = self._collection.get(
+            results = await asyncio.to_thread(
+                self._collection.get,
                 where={"agent_id": agent_id},
                 limit=n,
             )
@@ -205,7 +205,7 @@ class ChromaMemoryStore(MemoryStore):
         """Delete a single memory entry."""
         await self._ensure_initialized()
         try:
-            self._collection.delete(ids=[entry_id])
+            await asyncio.to_thread(self._collection.delete, ids=[entry_id])
         except Exception as e:
             raise MemoryError(f"Failed to delete memory entry: {e}")
 
@@ -213,8 +213,8 @@ class ChromaMemoryStore(MemoryStore):
         """Clear all entries for an agent."""
         await self._ensure_initialized()
         try:
-            results = self._collection.get(where={"agent_id": agent_id})
+            results = await asyncio.to_thread(self._collection.get, where={"agent_id": agent_id})
             if results["ids"]:
-                self._collection.delete(ids=results["ids"])
+                await asyncio.to_thread(self._collection.delete, ids=results["ids"])
         except Exception as e:
             raise MemoryError(f"Failed to clear memory for agent {agent_id}: {e}")
