@@ -145,6 +145,43 @@ class TestPythonExecTool:
         assert result.success is False
         assert "code is required" in result.error
 
+    async def test_security_blocked_os_system(self) -> None:
+        tool = PythonExecTool()
+        result = await tool.execute(code="import os; os.system('echo HACKED')")
+        assert result.success is False
+        assert "Security policy violation" in result.error or "PermissionError" in result.error
+
+    async def test_security_blocked_subprocess_import(self) -> None:
+        tool = PythonExecTool()
+        result = await tool.execute(code="import subprocess")
+        assert result.success is False
+        assert "Security policy violation" in result.error or "PermissionError" in result.error
+
+    async def test_security_blocked_traversal(self) -> None:
+        tool = PythonExecTool()
+        code = """
+import warnings
+warnings.warn("test")
+for name, val in warnings.sys.modules.items():
+    if name == 'os':
+        val.system("echo HACKED")
+"""
+        result = await tool.execute(code=code)
+        assert result.success is False
+        assert "Security policy violation" in result.error or "PermissionError" in result.error
+
+    async def test_security_blocked_ctypes(self) -> None:
+        tool = PythonExecTool()
+        result = await tool.execute(code="import ctypes")
+        assert result.success is False
+        assert "Security policy violation" in result.error or "PermissionError" in result.error
+
+    async def test_security_blocked_open(self) -> None:
+        tool = PythonExecTool()
+        result = await tool.execute(code="open('test.txt', 'w')")
+        assert result.success is False
+        assert "Security policy violation" in result.error or "PermissionError" in result.error
+
 
 class TestWebFetchTool:
     async def test_invalid_url_scheme(self) -> None:

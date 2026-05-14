@@ -49,10 +49,54 @@ class PythonExecTool(BaseTool):
         cmd_timeout = float(kwargs.get("timeout", self._default_timeout))
         start = time.monotonic()
 
+        import textwrap
+        wrapper_code = textwrap.dedent(f"""\
+import sys
+
+FORBIDDEN_EVENTS = {{
+    "os.system",
+    "os.exec",
+    "os.posix_spawn",
+    "os.spawn",
+    "subprocess.Popen",
+    "pty.spawn",
+    "socket.connect",
+    "socket.bind",
+    "socket.gethostname",
+    "urllib.Request",
+    "builtins.input",
+    "open",
+}}
+
+FORBIDDEN_MODULES = {{
+    "os", "subprocess", "pty", "socket", "urllib", "http", "requests", "sys", "ctypes", "_ctypes", "pathlib", "io"
+}}
+
+def audit_hook(event, args):
+    if event in FORBIDDEN_EVENTS or event.startswith("os.exec") or event.startswith("os.spawn"):
+        raise PermissionError(f"Security policy violation: {{event}} is not allowed")
+
+    if event == "import" and args[0].split(".")[0] in FORBIDDEN_MODULES:
+        raise PermissionError(f"Security policy violation: importing {{args[0]}} is not allowed")
+
+sys.addaudithook(audit_hook)
+
+stderr = sys.stderr
+for m in list(sys.modules.keys()):
+    if m.split(".")[0] in FORBIDDEN_MODULES:
+        sys.modules.pop(m, None)
+
+try:
+    exec({repr(code)}, {{"__builtins__": __builtins__}})
+except Exception as e:
+    print(f"{{type(e).__name__}}: {{e}}", file=stderr)
+    sys.exit(1)
+""")
+
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
-                [sys.executable, "-c", code],
+                [sys.executable, "-c", wrapper_code],
                 capture_output=True,
                 text=True,
                 timeout=cmd_timeout,
